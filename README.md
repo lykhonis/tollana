@@ -27,6 +27,14 @@ Tollana treats a run as something you can **suspend, migrate, replay, and meter*
 | **Accountable** | Budgets—compute, tokens, and the rest—are first-class. Cost and usage are attributable per run and per sub-goal. |
 | **Untrusted by default** | Model-generated code runs in isolation, on a tight budget, with only the capabilities you pass in. |
 
+## Development
+
+Nx is the only entry. After `npm install`, git hooks run `format` and `lint` on commit, and `format`, `lint`, `check`, and `test` on push (`--parallel=1`, same as CI). Bypass with `git commit --no-verify` / `git push --no-verify`.
+
+```text
+npx nx run-many -t format,lint,check,test --parallel=1
+```
+
 ## Contributing
 
 This repository does **not** accept pull requests or external contributions right now. Issues and PRs are not a contribution path. Forks under Apache 2.0 are fine.

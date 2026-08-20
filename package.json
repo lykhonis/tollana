@@ -3,7 +3,9 @@
   "private": true,
   "license": "Apache-2.0",
   "description": "Nx entry for the Tollana workspace",
-  "scripts": {},
+  "scripts": {
+    "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
+  },
   "devDependencies": {
     "nx": "^21.4.1"
   }
