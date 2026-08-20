@@ -1,3 +1,6 @@
+use crate::container::{
+    decode_container, encode_container, encode_container_aead, ContainerBody, PluginStateEntry,
+};
 use crate::decode::{decode_binary, encode_binary, ExportKind, FunctionType, GlobalInit, Module};
 use crate::instruction::BlockType;
 use crate::instruction::Instruction;
@@ -6,7 +9,8 @@ use crate::machine::{
     MachineState, ProgramCounter, SuspendReason, TrapKind,
 };
 use crate::snapshot::{
-    capability_handle_live, snapshot_capability_values, CoreSnapshot, HostRebind, PluginIdentity,
+    capability_handle_live, decode_tirs, encode_tirs, snapshot_capability_values, CoreSnapshot,
+    HostRebind, PluginIdentity,
 };
 use crate::validate::validate;
 use crate::value::{CapHandle, Label, Value};
@@ -51,6 +55,12 @@ impl fmt::Display for HostInterfaceError {
 }
 
 impl std::error::Error for HostInterfaceError {}
+
+pub struct RestoreResult {
+    pub instance: Instance,
+    pub plugin_state: Vec<PluginStateEntry>,
+    pub journal_cursor: u64,
+}
 
 pub struct Instance {
     pub module: Module,
@@ -295,6 +305,56 @@ impl Instance {
             continuations: self.machine.continuations.clone(),
             pending_host_call: self.machine.pending_host_call.clone(),
         }
+    }
+
+    pub fn snapshot(&self, plugin_state: Vec<PluginStateEntry>, journal_cursor: u64) -> Vec<u8> {
+        let tirs = encode_tirs(&self.snapshot_core());
+        encode_container(
+            &ContainerBody {
+                tirs,
+                plugin_state,
+                journal_cursor,
+            },
+            [0u8; 16],
+        )
+    }
+
+    pub fn snapshot_aead(
+        &self,
+        plugin_state: Vec<PluginStateEntry>,
+        journal_cursor: u64,
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+    ) -> Result<Vec<u8>, HostInterfaceError> {
+        let tirs = encode_tirs(&self.snapshot_core());
+        encode_container_aead(
+            &ContainerBody {
+                tirs,
+                plugin_state,
+                journal_cursor,
+            },
+            [0u8; 16],
+            key,
+            nonce,
+        )
+        .map_err(|e| HostInterfaceError::Reject { message: e.message })
+    }
+
+    pub fn restore(
+        bytes: &[u8],
+        rebind: &[HostRebind],
+        aead_key: Option<&[u8; 32]>,
+    ) -> Result<RestoreResult, HostInterfaceError> {
+        let decoded = decode_container(bytes, aead_key)
+            .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
+        let core = decode_tirs(&decoded.body.tirs)
+            .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
+        let instance = Self::restore_core(core, rebind)?;
+        Ok(RestoreResult {
+            instance,
+            plugin_state: decoded.body.plugin_state,
+            journal_cursor: decoded.body.journal_cursor,
+        })
     }
 
     pub fn restore_core(
@@ -1787,6 +1847,108 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(restored.machine.remaining_fuel, 995);
+    }
+
+    #[test]
+    fn program_3_via_container_bytes() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (i32.add
+      (host.invoke Echo (i32.const 41))
+      (i32.const 1))))
+"#;
+        let mut inst = with_echo(src);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let fuel = inst.machine.remaining_fuel;
+        let bytes = inst.snapshot(Vec::new(), 0);
+        assert_eq!(inst.machine.remaining_fuel, fuel);
+        drop(inst);
+        let restored = Instance::restore(&bytes, &[echo_rebind()], None).unwrap();
+        assert!(restored.plugin_state.is_empty());
+        assert_eq!(restored.journal_cursor, 0);
+        let mut inst = restored.instance;
+        assert_eq!(inst.machine.remaining_fuel, 998);
+        let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.remaining_fuel, 995);
+    }
+
+    #[test]
+    fn container_bit_flip_rejects_restore() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let mut inst = with_echo(src);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let mut bytes = inst.snapshot(Vec::new(), 0);
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        match Instance::restore(&bytes, &[echo_rebind()], None) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(
+                    message.contains("checksum")
+                        || message.contains("mismatch")
+                        || message.contains("end of")
+                );
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn program_3_via_aead_container() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (i32.add
+      (host.invoke Echo (i32.const 41))
+      (i32.const 1))))
+"#;
+        let mut inst = with_echo(src);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let key = [0x11u8; 32];
+        let nonce = [0x22u8; 12];
+        let bytes = inst.snapshot_aead(Vec::new(), 0, &key, &nonce).unwrap();
+        drop(inst);
+        match Instance::restore(&bytes, &[echo_rebind()], Some(&[0x33u8; 32])) {
+            Err(HostInterfaceError::Reject { .. }) => {}
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
+        let restored = Instance::restore(&bytes, &[echo_rebind()], Some(&key)).unwrap();
+        let mut inst = restored.instance;
+        let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.remaining_fuel, 995);
     }
 
     #[test]

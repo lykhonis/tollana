@@ -1299,7 +1299,7 @@ Type section payload is 23 bytes: `functionTypeCount = 2` (`02 00 00 00`); type 
 
 ## IR-Level Snapshot Surface
 
-RFC 0001 owns the on-disk AEAD/checksum container ([RFC 0001](architecture.md) §11). This section defines **what MUST round-trip** at the IR layer so tests can assert exact core-state equality.
+RFC 0001 owns the on-disk AEAD/checksum **container** ([RFC 0001](architecture.md) §11, v0 snapshot container). TIRS is the **payload** inside that container, not the product file. This section defines **what MUST round-trip** at the IR layer so tests can assert exact core-state equality.
 
 ### MUST round-trip (normative)
 

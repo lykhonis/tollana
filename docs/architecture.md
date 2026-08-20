@@ -495,12 +495,55 @@ Snapshot
 
 ### Format
 
-- **Primary:** versioned binary (`rkyv` or `bincode` + strong header/checksums)
-- **Integrity & confidentiality:** header supports AEAD encryption under a host-managed key; plain checksum mode remains available for non-sensitive or development use
-- Memory: full dump first; dirty-page / incremental snapshots later
-- Optional compression (e.g. zstd)
-- Treated as an opaque blob by storage backends
-- Optional binding to attestation identity or host so a snapshot cannot be restored on an unauthorized machine
+- **Primary (v0):** the **snapshot container** specified below. Hand-written little-endian layout. MUST NOT require rkyv, bincode, or a second encoding of core machine state.
+- Core machine state, plugin identity map, and pending host calls MUST be the RFC 0002 **TIRS** payload inside the container. The container MUST NOT fork a second `CoreSnapshot` encoding.
+- **Integrity & confidentiality:** header supports AEAD encryption under a host-managed key; plain checksum mode remains available for non-sensitive or development use.
+- Memory: full dump first (inside TIRS); dirty-page / incremental snapshots later.
+- Optional compression (e.g. zstd) is out of v0.
+- Treated as an opaque blob by storage backends.
+- Optional binding to attestation identity or host so a snapshot cannot be restored on an unauthorized machine (out of v0).
+
+### v0 snapshot container (normative)
+
+Magic `54 4C 4E 41` (`TLNA`). Distinct from RFC 0002 TIRS (`54 49 52 53`) and module magic `TIR\0`.
+
+Little-endian. Field name **`containerVersion`** (MUST NOT be called `formatVersion`; that name is TIRS).
+
+```text
+magic:                    54 4C 4E 41
+containerVersion:         u16 = 1
+flags:                    u16
+                          bit 0 = 0 → checksum mode
+                          bit 0 = 1 → AEAD mode
+                          bits 1–15 MUST be 0
+instanceId:               16 bytes   ; host-assigned; tests MAY use zeros
+integrity:                32 bytes   ; checksum mode: SHA-256 of body
+                                     ; AEAD mode: 16-byte AES-256-GCM tag, then 16 zero bytes
+nonce:                    12 bytes   ; AEAD mode: GCM nonce; checksum mode: 12 zero bytes
+bodyLength:               u32
+body:                     that many bytes
+```
+
+**Body** (checksum mode: plaintext; AEAD mode: AES-256-GCM ciphertext of the same plaintext layout):
+
+```text
+tirsLength:               u32
+tirsBytes:                RFC 0002 TIRS
+pluginStateCount:         u32
+for each:
+  pluginId:               u32
+  blobLength:             u32
+  blob:                   opaque plugin state
+journalCursor:            u64
+```
+
+Plugin-state rows are **`(pluginId, blob)` only**. MUST NOT store content hashes in this table; hashes live in TIRS. Integrity (SHA-256 of body in checksum mode; GCM over body with AAD defined below in AEAD mode) MUST cover TIRS + plugin-state table + journal cursor. Decode MUST fail closed on bad magic, `containerVersion ≠ 1`, nonzero reserved flag bits, truncated body, or integrity failure.
+
+**Checksum mode:** `integrity[0..32) = SHA-256(body)`. `nonce` MUST be 12 zero bytes.
+
+**AEAD mode:** AES-256-GCM, 256-bit host-supplied key. AAD is `magic || containerVersion || flags || instanceId` (26 bytes). Ciphertext is the body. Tag is 16 bytes in `integrity[0..16)`; `integrity[16..32)` MUST be zero. `nonce` is 12 random or host-supplied bytes, unique per snapshot under that key.
+
+Unknown `containerVersion` MUST reject. A valid TIRS blob presented as a container MUST reject (wrong magic).
 
 ### Restore
 

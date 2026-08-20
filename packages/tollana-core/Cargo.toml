@@ -5,3 +5,7 @@ edition = "2021"
 description = "Tollana abstract machine and Tollana IR interpreter"
 license = "Apache-2.0"
 publish = false
+
+[dependencies]
+aes-gcm = "0.10"
+sha2 = "0.10"
