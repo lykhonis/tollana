@@ -1,9 +1,12 @@
-use crate::decode::{encode_binary, ExportKind, FunctionType, GlobalInit, Module};
+use crate::decode::{decode_binary, encode_binary, ExportKind, FunctionType, GlobalInit, Module};
 use crate::instruction::BlockType;
 use crate::instruction::Instruction;
 use crate::machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,
     MachineState, ProgramCounter, SuspendReason, TrapKind,
+};
+use crate::snapshot::{
+    capability_handle_live, snapshot_capability_values, CoreSnapshot, HostRebind, PluginIdentity,
 };
 use crate::validate::validate;
 use crate::value::{CapHandle, Label, Value};
@@ -53,6 +56,8 @@ pub struct Instance {
     pub module: Module,
     pub machine: MachineState,
     plugins: HashSet<(u32, u32)>,
+    plugin_identities: Vec<PluginIdentity>,
+    entry_export_name: String,
     last_outcome: Option<ExecOutcome>,
     value_stack_cap: usize,
     call_frame_cap: usize,
@@ -119,6 +124,18 @@ impl Instance {
                 },
             }
         }
+        let mut plugin_identities = Vec::new();
+        let mut seen = HashSet::new();
+        for imp in &module.host_imports {
+            if seen.insert(imp.plugin_id) {
+                plugin_identities.push(PluginIdentity {
+                    plugin_id: imp.plugin_id,
+                    identity_hash: [0u8; 32],
+                    name: imp.name.clone(),
+                    version: "0".into(),
+                });
+            }
+        }
         let machine = MachineState {
             module_bytes: encode_binary(&module),
             linear_memory: vec![0; mem_len],
@@ -133,6 +150,8 @@ impl Instance {
             module,
             machine,
             plugins,
+            plugin_identities,
+            entry_export_name: "main".into(),
             last_outcome: None,
             value_stack_cap: VALUE_STACK_CAP,
             call_frame_cap: CALL_FRAME_CAP,
@@ -181,6 +200,7 @@ impl Instance {
                 }
             }
         }
+        self.entry_export_name = export_name.to_string();
         self.machine.remaining_fuel = initial_fuel;
         self.machine.pending_host_call = None;
         self.machine.continuations = vec![Continuation {
@@ -260,6 +280,110 @@ impl Instance {
             }
         }
         self.continue_run()
+    }
+
+    pub fn snapshot_core(&self) -> CoreSnapshot {
+        CoreSnapshot {
+            module_bytes: self.machine.module_bytes.clone(),
+            entry_name: self.entry_export_name.clone(),
+            plugin_identities: self.plugin_identities.clone(),
+            remaining_fuel: self.machine.remaining_fuel,
+            linear_memory: self.machine.linear_memory.clone(),
+            globals: self.machine.globals.clone(),
+            capability_table: self.machine.capability_table.clone(),
+            active_continuation_identifier: self.machine.active_continuation_identifier,
+            continuations: self.machine.continuations.clone(),
+            pending_host_call: self.machine.pending_host_call.clone(),
+        }
+    }
+
+    pub fn restore_core(
+        snapshot: CoreSnapshot,
+        rebind: &[HostRebind],
+    ) -> Result<Self, HostInterfaceError> {
+        let module = decode_binary(&snapshot.module_bytes)
+            .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
+        validate(&module).map_err(|e| HostInterfaceError::Reject { message: e.message })?;
+        for ident in &snapshot.plugin_identities {
+            let rb = rebind.iter().find(|r| r.plugin_id == ident.plugin_id);
+            let Some(rb) = rb else {
+                return Err(HostInterfaceError::Reject {
+                    message: format!("missing rebind for plugin {}", ident.plugin_id),
+                });
+            };
+            if rb.identity_hash != ident.identity_hash {
+                return Err(HostInterfaceError::Reject {
+                    message: "plugin identity hash mismatch".into(),
+                });
+            }
+        }
+        let mut plugins = HashSet::new();
+        for rb in rebind {
+            for pair in &rb.methods {
+                plugins.insert(*pair);
+            }
+        }
+        for imp in &module.host_imports {
+            if !plugins.contains(&(imp.plugin_id, imp.method_id)) {
+                return Err(HostInterfaceError::Reject {
+                    message: format!("missing plugin {} {}", imp.plugin_id, imp.method_id),
+                });
+            }
+        }
+        let expected_mem = module
+            .memory_page_count
+            .unwrap_or(0)
+            .saturating_mul(PAGE_SIZE) as usize;
+        if snapshot.linear_memory.len() != expected_mem {
+            return Err(HostInterfaceError::Reject {
+                message: "restored memory length mismatch".into(),
+            });
+        }
+        if snapshot.globals.len() != module.globals.len() {
+            return Err(HostInterfaceError::Reject {
+                message: "restored global count mismatch".into(),
+            });
+        }
+        for v in snapshot_capability_values(&snapshot) {
+            if let Some(h) = v.as_cap() {
+                if !capability_handle_live(&snapshot.capability_table, h) {
+                    return Err(HostInterfaceError::Reject {
+                        message: "capability mismatch".into(),
+                    });
+                }
+            }
+        }
+        let last_outcome = if snapshot.pending_host_call.is_some() {
+            Some(ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            })
+        } else if snapshot.active_continuation_identifier.is_some() {
+            Some(ExecOutcome::Suspended {
+                reason: SuspendReason::OutOfFuel,
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            module,
+            machine: MachineState {
+                module_bytes: snapshot.module_bytes,
+                linear_memory: snapshot.linear_memory,
+                globals: snapshot.globals,
+                remaining_fuel: snapshot.remaining_fuel,
+                capability_table: snapshot.capability_table,
+                pending_host_call: snapshot.pending_host_call,
+                active_continuation_identifier: snapshot.active_continuation_identifier,
+                continuations: snapshot.continuations,
+            },
+            plugins,
+            plugin_identities: snapshot.plugin_identities,
+            entry_export_name: snapshot.entry_name,
+            last_outcome,
+            value_stack_cap: VALUE_STACK_CAP,
+            call_frame_cap: CALL_FRAME_CAP,
+            control_stack_cap: CONTROL_STACK_CAP,
+        })
     }
 
     pub fn trap_pending(&mut self, kind: TrapKind) -> Result<ExecOutcome, HostInterfaceError> {
@@ -1459,6 +1583,16 @@ mod tests {
         Instance::instantiate_with(module, plugins, Vec::new(), 16).unwrap()
     }
 
+    fn echo_rebind() -> HostRebind {
+        HostRebind {
+            plugin_id: 0,
+            identity_hash: [0u8; 32],
+            name: "Echo".into(),
+            version: "0".into(),
+            methods: vec![(0, 0)],
+        }
+    }
+
     #[test]
     fn program_2_echo() {
         let src = r#"
@@ -1576,5 +1710,139 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(inst.machine.pending_host_call.is_none());
+    }
+
+    #[test]
+    fn echo_suspend_snapshot_matches_tirs_hex() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let mut inst = with_echo(src);
+        let fuel_before = inst.machine.remaining_fuel;
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        assert_eq!(inst.machine.remaining_fuel, 998);
+        let snap = inst.snapshot_core();
+        assert_eq!(inst.machine.remaining_fuel, 998);
+        assert_eq!(fuel_before, 0);
+        let bytes = crate::snapshot::encode_tirs(&snap);
+        let again = crate::snapshot::decode_tirs(&bytes).unwrap();
+        assert_eq!(again, snap);
+        assert_eq!(snap.remaining_fuel, 998);
+        assert_eq!(snap.continuations[0].call_frames[0].instruction_index, 2);
+    }
+
+    #[test]
+    fn program_3_snapshot_restore_resume() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (i32.add
+      (host.invoke Echo (i32.const 41))
+      (i32.const 1))))
+"#;
+        let mut inst = with_echo(src);
+        let out = inst.invoke("main", &[], 1000).unwrap();
+        match out {
+            ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        let snap = inst.snapshot_core();
+        assert_eq!(snap.module_bytes, inst.machine.module_bytes);
+        assert_eq!(snap.remaining_fuel, 998);
+        assert_eq!(snap.continuations[0].value_stack.len(), 0);
+        assert_eq!(snap.continuations[0].call_frames[0].instruction_index, 2);
+        assert_eq!(snap.continuations[0].call_frames[0].function_index, 0);
+        let label = snap.continuations[0].call_frames[0].control_stack[0];
+        assert_eq!(label.label_kind, ControlLabelKind::Block);
+        assert_eq!(label.result_count, 1);
+        assert_eq!(label.stack_height, 0);
+        let call = snap.pending_host_call.as_ref().unwrap();
+        assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
+        assert_eq!(snap.linear_memory.len(), 0);
+        assert!(snap.capability_table.is_empty());
+        drop(inst);
+        let mut restored = Instance::restore_core(snap, &[echo_rebind()]).unwrap();
+        assert_eq!(restored.machine.remaining_fuel, 998);
+        let out = restored
+            .resume(vec![Value::i32(41, Label::Public)])
+            .unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(restored.machine.remaining_fuel, 995);
+    }
+
+    #[test]
+    fn restore_rejects_identity_hash_mismatch() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let mut inst = with_echo(src);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let snap = inst.snapshot_core();
+        let mut rebind = echo_rebind();
+        rebind.identity_hash[0] = 1;
+        match Instance::restore_core(snap, &[rebind]) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(message.contains("identity"));
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn restore_rejects_capability_generation_mismatch() {
+        let src = r#"
+(module
+  (host.import UseCapability
+    (pluginId 0)
+    (methodId 0)
+    (param Capability)
+    (result i32))
+  (func (export "main") (param Capability) (result i32)
+    (host.invoke UseCapability (local.get 0))))
+"#;
+        let mut inst = with_echo(src);
+        let handle = CapHandle {
+            table_index: 1,
+            generation: 1,
+        };
+        inst.grant_cap(handle, b"echo-cap".to_vec());
+        let cap = Value::capability(handle, Label::Confidential);
+        let _ = inst.invoke("main", &[cap], 1000).unwrap();
+        let mut snap = inst.snapshot_core();
+        snap.capability_table[0].generation = 2;
+        match Instance::restore_core(snap, &[echo_rebind()]) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(message.contains("capability"));
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
     }
 }

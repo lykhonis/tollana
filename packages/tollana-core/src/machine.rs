@@ -13,6 +13,25 @@ pub enum ControlLabelKind {
     If,
 }
 
+impl ControlLabelKind {
+    pub fn code(self) -> u8 {
+        match self {
+            ControlLabelKind::Block => 1,
+            ControlLabelKind::Loop => 2,
+            ControlLabelKind::If => 3,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(ControlLabelKind::Block),
+            2 => Some(ControlLabelKind::Loop),
+            3 => Some(ControlLabelKind::If),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlLabel {
     pub label_kind: ControlLabelKind,
