@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "sharedGlobals": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/rustfmt.toml"
+    ]
+  },
+  "targetDefaults": {
+    "format": { "cache": true },
+    "lint": { "cache": true },
+    "test": { "cache": true },
+    "check": { "cache": true }
+  }
+}

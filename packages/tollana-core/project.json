@@ -1,0 +1,40 @@
+{
+  "name": "tollana-core",
+  "projectType": "library",
+  "sourceRoot": "packages/tollana-core/src",
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo fmt --all -- --check",
+        "cwd": "{workspaceRoot}"
+      },
+      "configurations": {
+        "write": {
+          "command": "cargo fmt --all"
+        }
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo clippy --all-targets -- -D warnings",
+        "cwd": "{workspaceRoot}"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo test --all",
+        "cwd": "{workspaceRoot}"
+      }
+    },
+    "check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo check --all-targets",
+        "cwd": "{workspaceRoot}"
+      }
+    }
+  }
+}

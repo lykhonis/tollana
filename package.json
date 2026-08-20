@@ -1,0 +1,10 @@
+{
+  "name": "tollana",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Nx entry for the Tollana workspace",
+  "scripts": {},
+  "devDependencies": {
+    "nx": "^21.4.1"
+  }
+}
