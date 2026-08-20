@@ -1,11 +1,12 @@
 use crate::decode::{encode_binary, ExportKind, FunctionType, GlobalInit, Module};
+use crate::instruction::BlockType;
 use crate::instruction::Instruction;
 use crate::machine::{
-    CallFrame, Continuation, ControlLabel, ControlLabelKind, MachineState, ProgramCounter,
-    SuspendReason, TrapKind,
+    CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,
+    MachineState, ProgramCounter, SuspendReason, TrapKind,
 };
 use crate::validate::validate;
-use crate::value::{Label, Value};
+use crate::value::{CapHandle, Label, Value};
 use std::collections::HashSet;
 use std::fmt;
 
@@ -51,6 +52,7 @@ impl std::error::Error for HostInterfaceError {}
 pub struct Instance {
     pub module: Module,
     pub machine: MachineState,
+    plugins: HashSet<(u32, u32)>,
     last_outcome: Option<ExecOutcome>,
     value_stack_cap: usize,
     call_frame_cap: usize,
@@ -130,6 +132,7 @@ impl Instance {
         Ok(Self {
             module,
             machine,
+            plugins,
             last_outcome: None,
             value_stack_cap: VALUE_STACK_CAP,
             call_frame_cap: CALL_FRAME_CAP,
@@ -171,57 +174,102 @@ impl Instance {
                 });
             }
         }
+        for a in arguments {
+            if let Some(h) = a.as_cap() {
+                if !h.is_null() {
+                    self.ensure_cap(h, Vec::new());
+                }
+            }
+        }
         self.machine.remaining_fuel = initial_fuel;
         self.machine.pending_host_call = None;
-        let mut locals = arguments.to_vec();
-        for t in &func.locals {
-            locals.push(Value::default_for(*t));
-        }
-        let end_index = func.instructions.len().saturating_sub(1) as u32;
-        let label = ControlLabel {
-            label_kind: ControlLabelKind::Block,
-            parameter_count: ty.parameters.len() as u32,
-            result_count: ty.results.len() as u32,
-            stack_height: 0,
-            branch_instruction_index: end_index,
-        };
-        if self.control_stack_cap == 0 {
-            return Ok(self.trap(
-                TrapKind::ControlStackOverflow,
-                ProgramCounter {
-                    function_index,
-                    instruction_index: 0,
-                },
-            ));
-        }
-        if self.call_frame_cap == 0 {
-            return Ok(self.trap(
-                TrapKind::CallStackOverflow,
-                ProgramCounter {
-                    function_index,
-                    instruction_index: 0,
-                },
-            ));
-        }
-        let frame = CallFrame {
-            function_index,
-            instruction_index: 0,
-            locals,
-            control_stack: vec![label],
-            return_program_counter: None,
-        };
         self.machine.continuations = vec![Continuation {
             continuation_identifier: 0,
             value_stack: Vec::new(),
-            call_frames: vec![frame],
+            call_frames: Vec::new(),
         }];
         self.machine.active_continuation_identifier = Some(0);
         self.last_outcome = None;
+        if let Err(kind) = self.enter_frame(function_index, arguments.to_vec(), None) {
+            let pc = ProgramCounter {
+                function_index,
+                instruction_index: 0,
+            };
+            return Ok(self.trap(kind, pc));
+        }
         self.continue_run()
     }
 
     pub fn add_fuel(&mut self, amount: u64) {
         self.machine.remaining_fuel = self.machine.remaining_fuel.saturating_add(amount);
+    }
+
+    pub fn grant_cap(&mut self, handle: CapHandle, opaque: Vec<u8>) {
+        self.ensure_cap(handle, opaque);
+    }
+
+    pub fn resume(&mut self, results: Vec<Value>) -> Result<ExecOutcome, HostInterfaceError> {
+        let pending = self
+            .machine
+            .pending_host_call
+            .take()
+            .ok_or(HostInterfaceError::Reject {
+                message: "resume without pending host call".into(),
+            })?;
+        if !matches!(
+            self.last_outcome,
+            Some(ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke
+            })
+        ) {
+            self.machine.pending_host_call = Some(pending);
+            return Err(HostInterfaceError::Reject {
+                message: "resume is only for host.invoke".into(),
+            });
+        }
+        let import = self
+            .module
+            .host_imports
+            .iter()
+            .find(|i| i.plugin_id == pending.plugin_id && i.method_id == pending.method_id)
+            .ok_or(HostInterfaceError::Reject {
+                message: "pending import missing".into(),
+            })?;
+        let ty = &self.module.types[import.type_index as usize];
+        if results.len() != ty.results.len() {
+            let pc = self.pc();
+            return Ok(self.trap(TrapKind::HostTypeMismatch, pc));
+        }
+        for (v, t) in results.iter().zip(ty.results.iter()) {
+            if v.value_type() != *t {
+                let pc = self.pc();
+                return Ok(self.trap(TrapKind::HostTypeMismatch, pc));
+            }
+        }
+        for v in &results {
+            if let Some(h) = v.as_cap() {
+                if !h.is_null() {
+                    self.ensure_cap(h, Vec::new());
+                }
+            }
+        }
+        for v in results {
+            if let Err(kind) = self.push(v) {
+                let pc = self.pc();
+                return Ok(self.trap(kind, pc));
+            }
+        }
+        self.continue_run()
+    }
+
+    pub fn trap_pending(&mut self, kind: TrapKind) -> Result<ExecOutcome, HostInterfaceError> {
+        if self.machine.pending_host_call.take().is_none() {
+            return Err(HostInterfaceError::Reject {
+                message: "trap_pending without pending host call".into(),
+            });
+        }
+        let pc = self.pc();
+        Ok(self.trap(kind, pc))
     }
 
     pub fn continue_run(&mut self) -> Result<ExecOutcome, HostInterfaceError> {
@@ -341,6 +389,9 @@ impl Instance {
                 Step::Continue
             }
             Ok(ExecAction::Stay) => Step::Continue,
+            Ok(ExecAction::Suspend) => Step::Done(ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            }),
             Ok(ExecAction::Complete(results)) => {
                 self.machine.active_continuation_identifier = None;
                 self.machine.continuations.clear();
@@ -430,19 +481,101 @@ impl Instance {
             }
             Instruction::End => self.exec_end(),
             Instruction::Return => self.exec_return(),
-            Instruction::I32Load { .. }
-            | Instruction::I32Store { .. }
-            | Instruction::I64Load { .. }
-            | Instruction::I64Store { .. }
-            | Instruction::MemorySize
-            | Instruction::Block { .. }
-            | Instruction::Loop { .. }
-            | Instruction::If { .. }
-            | Instruction::Else
-            | Instruction::Br { .. }
-            | Instruction::BrIf { .. }
-            | Instruction::Call { .. }
-            | Instruction::HostInvoke { .. } => Err(TrapKind::TypeMismatch),
+            Instruction::I32Load { immediate_offset } => {
+                let addr = self.pop_i32()?.as_i32().unwrap();
+                let at = self.mem_addr(addr, immediate_offset, 4)?;
+                let bytes = [
+                    self.machine.linear_memory[at],
+                    self.machine.linear_memory[at + 1],
+                    self.machine.linear_memory[at + 2],
+                    self.machine.linear_memory[at + 3],
+                ];
+                self.push(Value::i32(i32::from_le_bytes(bytes), Label::Public))?;
+                Ok(ExecAction::Next)
+            }
+            Instruction::I32Store { immediate_offset } => {
+                let val = self.pop_i32()?.as_i32().unwrap();
+                let addr = self.pop_i32()?.as_i32().unwrap();
+                let at = self.mem_addr(addr, immediate_offset, 4)?;
+                let bytes = val.to_le_bytes();
+                self.machine.linear_memory[at..at + 4].copy_from_slice(&bytes);
+                Ok(ExecAction::Next)
+            }
+            Instruction::I64Load { immediate_offset } => {
+                let addr = self.pop_i32()?.as_i32().unwrap();
+                let at = self.mem_addr(addr, immediate_offset, 8)?;
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&self.machine.linear_memory[at..at + 8]);
+                self.push(Value::i64(i64::from_le_bytes(bytes), Label::Public))?;
+                Ok(ExecAction::Next)
+            }
+            Instruction::I64Store { immediate_offset } => {
+                let val = self.pop_i64()?.as_i64().unwrap();
+                let addr = self.pop_i32()?.as_i32().unwrap();
+                let at = self.mem_addr(addr, immediate_offset, 8)?;
+                self.machine.linear_memory[at..at + 8].copy_from_slice(&val.to_le_bytes());
+                Ok(ExecAction::Next)
+            }
+            Instruction::MemorySize => {
+                let pages = (self.machine.linear_memory.len() / PAGE_SIZE as usize) as i32;
+                self.push(Value::i32(pages, Label::Public))?;
+                Ok(ExecAction::Next)
+            }
+            Instruction::Block { block_type } => {
+                self.push_structured(ControlLabelKind::Block, block_type, false)?;
+                Ok(ExecAction::Next)
+            }
+            Instruction::Loop { block_type } => {
+                self.push_structured(ControlLabelKind::Loop, block_type, true)?;
+                Ok(ExecAction::Next)
+            }
+            Instruction::If { block_type } => {
+                let cond = self.pop_i32()?.as_i32().unwrap();
+                let (params, results) = self.block_arity(block_type)?;
+                let open = self.frame().instruction_index;
+                let function_index = self.frame().function_index;
+                let end = self.find_end(function_index, open);
+                let els = self.find_else(function_index, open);
+                let height = self.continuation().value_stack.len() as u32 - params;
+                self.push_label(ControlLabel {
+                    label_kind: ControlLabelKind::If,
+                    parameter_count: params,
+                    result_count: results,
+                    stack_height: height,
+                    branch_instruction_index: end,
+                })?;
+                if cond != 0 {
+                    Ok(ExecAction::Next)
+                } else if let Some(e) = els {
+                    self.frame_mut().instruction_index = e + 1;
+                    Ok(ExecAction::Stay)
+                } else {
+                    self.frame_mut().instruction_index = end;
+                    Ok(ExecAction::Stay)
+                }
+            }
+            Instruction::Else => {
+                let label = self
+                    .frame_mut()
+                    .control_stack
+                    .pop()
+                    .ok_or(TrapKind::TypeMismatch)?;
+                self.frame_mut().instruction_index = label.branch_instruction_index + 1;
+                Ok(ExecAction::Stay)
+            }
+            Instruction::Br { label_depth } => self.exec_br(label_depth),
+            Instruction::BrIf { label_depth } => {
+                let cond = self.pop_i32()?.as_i32().unwrap();
+                if cond != 0 {
+                    self.exec_br(label_depth)
+                } else {
+                    Ok(ExecAction::Next)
+                }
+            }
+            Instruction::Call { function_index } => self.exec_call(function_index),
+            Instruction::HostInvoke { host_import_index } => {
+                self.exec_host_invoke(host_import_index)
+            }
         }
     }
 
@@ -465,6 +598,304 @@ impl Instance {
         }
         *slot = v;
         Ok(())
+    }
+
+    fn ensure_cap(&mut self, handle: CapHandle, opaque: Vec<u8>) {
+        if handle.is_null() {
+            return;
+        }
+        if let Some(e) = self
+            .machine
+            .capability_table
+            .iter_mut()
+            .find(|e| e.table_index == handle.table_index)
+        {
+            e.generation = handle.generation;
+            e.live = true;
+            if !opaque.is_empty() {
+                e.host_identity_opaque = opaque;
+            }
+            return;
+        }
+        self.machine.capability_table.push(CapabilityTableEntry {
+            table_index: handle.table_index,
+            generation: handle.generation,
+            live: true,
+            host_identity_opaque: opaque,
+        });
+    }
+
+    fn cap_is_live(&self, handle: CapHandle) -> bool {
+        !handle.is_null()
+            && self.machine.capability_table.iter().any(|e| {
+                e.table_index == handle.table_index && e.generation == handle.generation && e.live
+            })
+    }
+
+    fn mem_addr(&self, addr: i32, offset: u32, size: u64) -> Result<usize, TrapKind> {
+        let ea = u64::from(addr as u32).saturating_add(u64::from(offset));
+        let len = self.machine.linear_memory.len() as u64;
+        if ea.saturating_add(size) > len {
+            return Err(TrapKind::OutOfBoundsMemory);
+        }
+        Ok(ea as usize)
+    }
+
+    fn block_arity(&self, bt: BlockType) -> Result<(u32, u32), TrapKind> {
+        match bt {
+            BlockType::Empty => Ok((0, 0)),
+            BlockType::SingleResult(_) => Ok((0, 1)),
+            BlockType::TypeIndex(i) => {
+                let t = self
+                    .module
+                    .types
+                    .get(i as usize)
+                    .ok_or(TrapKind::TypeMismatch)?;
+                Ok((t.parameters.len() as u32, t.results.len() as u32))
+            }
+        }
+    }
+
+    fn find_end(&self, function_index: u32, open: u32) -> u32 {
+        let insts = &self.module.functions[function_index as usize].instructions;
+        let mut depth = 1i32;
+        let mut i = open as usize + 1;
+        while i < insts.len() {
+            match insts[i] {
+                Instruction::Block { .. } | Instruction::Loop { .. } | Instruction::If { .. } => {
+                    depth += 1;
+                }
+                Instruction::End => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i as u32;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        insts.len().saturating_sub(1) as u32
+    }
+
+    fn find_else(&self, function_index: u32, open: u32) -> Option<u32> {
+        let insts = &self.module.functions[function_index as usize].instructions;
+        let mut depth = 1i32;
+        let mut i = open as usize + 1;
+        while i < insts.len() {
+            match insts[i] {
+                Instruction::Block { .. } | Instruction::Loop { .. } | Instruction::If { .. } => {
+                    depth += 1;
+                }
+                Instruction::Else if depth == 1 => return Some(i as u32),
+                Instruction::End => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn push_label(&mut self, label: ControlLabel) -> Result<(), TrapKind> {
+        if self.frame().control_stack.len() >= self.control_stack_cap {
+            return Err(TrapKind::ControlStackOverflow);
+        }
+        self.frame_mut().control_stack.push(label);
+        Ok(())
+    }
+
+    fn push_structured(
+        &mut self,
+        kind: ControlLabelKind,
+        block_type: BlockType,
+        is_loop: bool,
+    ) -> Result<(), TrapKind> {
+        let (params, results) = self.block_arity(block_type)?;
+        let open = self.frame().instruction_index;
+        let function_index = self.frame().function_index;
+        let branch = if is_loop {
+            open + 1
+        } else {
+            self.find_end(function_index, open)
+        };
+        let height = self.continuation().value_stack.len() as u32 - params;
+        self.push_label(ControlLabel {
+            label_kind: kind,
+            parameter_count: params,
+            result_count: results,
+            stack_height: height,
+            branch_instruction_index: branch,
+        })
+    }
+
+    fn enter_frame(
+        &mut self,
+        function_index: u32,
+        args: Vec<Value>,
+        ret: Option<ProgramCounter>,
+    ) -> Result<(), TrapKind> {
+        if self.continuation().call_frames.len() >= self.call_frame_cap {
+            return Err(TrapKind::CallStackOverflow);
+        }
+        let func = &self.module.functions[function_index as usize];
+        let ty = &self.module.types[func.type_index as usize];
+        let mut locals = args;
+        for t in &func.locals {
+            locals.push(Value::default_for(*t));
+        }
+        let end_index = func.instructions.len().saturating_sub(1) as u32;
+        let label = ControlLabel {
+            label_kind: ControlLabelKind::Block,
+            parameter_count: ty.parameters.len() as u32,
+            result_count: ty.results.len() as u32,
+            stack_height: self.continuation().value_stack.len() as u32,
+            branch_instruction_index: end_index,
+        };
+        if self.control_stack_cap == 0 {
+            return Err(TrapKind::ControlStackOverflow);
+        }
+        self.continuation_mut().call_frames.push(CallFrame {
+            function_index,
+            instruction_index: 0,
+            locals,
+            control_stack: vec![label],
+            return_program_counter: ret,
+        });
+        Ok(())
+    }
+
+    fn exec_br(&mut self, label_depth: u32) -> Result<ExecAction, TrapKind> {
+        let len = self.frame().control_stack.len();
+        let idx = len
+            .checked_sub(1 + label_depth as usize)
+            .ok_or(TrapKind::TypeMismatch)?;
+        if idx == 0 {
+            let n = self.current_type().results.len() as u32;
+            return self.do_return(n);
+        }
+        let label = self.frame().control_stack[idx];
+        let n = if label.label_kind == ControlLabelKind::Loop {
+            label.parameter_count
+        } else {
+            label.result_count
+        };
+        let mut kept = Vec::new();
+        for _ in 0..n {
+            kept.push(self.pop()?);
+        }
+        kept.reverse();
+        self.continuation_mut()
+            .value_stack
+            .truncate(label.stack_height as usize);
+        for v in kept {
+            self.push(v)?;
+        }
+        self.frame_mut()
+            .control_stack
+            .truncate(if label.label_kind == ControlLabelKind::Loop {
+                idx + 1
+            } else {
+                idx
+            });
+        if label.label_kind == ControlLabelKind::Loop {
+            self.frame_mut().instruction_index = label.branch_instruction_index;
+        } else {
+            self.frame_mut().instruction_index = label.branch_instruction_index + 1;
+        }
+        Ok(ExecAction::Stay)
+    }
+
+    fn exec_call(&mut self, function_index: u32) -> Result<ExecAction, TrapKind> {
+        let expected = {
+            let f = self
+                .module
+                .functions
+                .get(function_index as usize)
+                .ok_or(TrapKind::TypeMismatch)?;
+            let ty = self
+                .module
+                .types
+                .get(f.type_index as usize)
+                .ok_or(TrapKind::TypeMismatch)?;
+            ty.parameters.clone()
+        };
+        let n = expected.len();
+        let mut args = Vec::new();
+        for _ in 0..n {
+            args.push(self.pop()?);
+        }
+        args.reverse();
+        for (a, t) in args.iter().zip(expected.iter()) {
+            if a.value_type() != *t {
+                return Err(TrapKind::TypeMismatch);
+            }
+        }
+        let caller_f = self.frame().function_index;
+        let caller_i = self.frame().instruction_index;
+        let return_site = ProgramCounter {
+            function_index: caller_f,
+            instruction_index: caller_i + 1,
+        };
+        if self.continuation().call_frames.len() >= self.call_frame_cap {
+            return Err(TrapKind::CallStackOverflow);
+        }
+        self.enter_frame(function_index, args, Some(return_site))?;
+        let caller_pos = self.continuation().call_frames.len() - 2;
+        self.continuation_mut().call_frames[caller_pos].instruction_index =
+            return_site.instruction_index;
+        Ok(ExecAction::Stay)
+    }
+
+    fn exec_host_invoke(&mut self, host_import_index: u32) -> Result<ExecAction, TrapKind> {
+        let import = self
+            .module
+            .host_imports
+            .get(host_import_index as usize)
+            .ok_or(TrapKind::HostNotFound)?;
+        let plugin_id = import.plugin_id;
+        let method_id = import.method_id;
+        let ty = self
+            .module
+            .types
+            .get(import.type_index as usize)
+            .ok_or(TrapKind::HostTypeMismatch)?;
+        let params = ty.parameters.clone();
+        let mut arguments = Vec::new();
+        for _ in 0..params.len() {
+            arguments.push(self.pop().map_err(|_| TrapKind::ValueStackUnderflow)?);
+        }
+        arguments.reverse();
+        for (a, t) in arguments.iter().zip(params.iter()) {
+            if a.value_type() != *t {
+                return Err(TrapKind::HostTypeMismatch);
+            }
+        }
+        let mut capabilities = Vec::new();
+        for a in &arguments {
+            if let Some(h) = a.as_cap() {
+                if !self.cap_is_live(h) {
+                    return Err(TrapKind::InvalidCapability);
+                }
+                capabilities.push(h);
+            }
+        }
+        if !self.plugins.contains(&(plugin_id, method_id)) {
+            return Err(TrapKind::HostNotFound);
+        }
+        self.frame_mut().instruction_index += 1;
+        self.machine.pending_host_call = Some(HostCall {
+            plugin_id,
+            method_id,
+            arguments,
+            capabilities,
+            continuation_identifier: 0,
+        });
+        Ok(ExecAction::Suspend)
     }
 
     fn bin_i32(
@@ -586,6 +1017,7 @@ enum Step {
 enum ExecAction {
     Next,
     Stay,
+    Suspend,
     Complete(Vec<Value>),
 }
 
@@ -633,7 +1065,8 @@ fn rem_i64(lhs: i64, rhs: i64) -> Result<i64, TrapKind> {
 mod tests {
     use super::*;
     use crate::decode::decode_text;
-    use crate::value::Label;
+    use crate::value::{CapHandle, Label};
+    use std::collections::HashSet;
 
     fn run(src: &str, fuel: u64) -> (Instance, ExecOutcome) {
         let module = decode_text(src).expect("decode");
@@ -812,5 +1245,336 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn program_4a_aligned_store_load() {
+        let src = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (result i32)
+    (i32.store (i32.const 0) (i32.const 0x01020304))
+    (i32.load (i32.const 0))))
+"#;
+        let (inst, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(0x01020304, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(&inst.machine.linear_memory[0..4], &[0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(inst.machine.linear_memory.len(), 65536);
+    }
+
+    #[test]
+    fn program_4b_unaligned_store_load() {
+        let src = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (result i32)
+    (i32.store (i32.const 1) (i32.const 0x01020304))
+    (i32.load (i32.const 1))))
+"#;
+        let (inst, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(0x01020304, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.linear_memory[0], 0);
+        assert_eq!(&inst.machine.linear_memory[1..5], &[0x04, 0x03, 0x02, 0x01]);
+    }
+
+    #[test]
+    fn program_5_oob_load_traps() {
+        let src = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (result i32)
+    (i32.load (i32.const 65535))))
+"#;
+        let (inst, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Trapped {
+                trap_kind: TrapKind::OutOfBoundsMemory,
+                program_counter,
+            } => {
+                assert_eq!(program_counter.instruction_index, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.remaining_fuel, 998);
+        assert!(inst.machine.pending_host_call.is_none());
+    }
+
+    #[test]
+    fn if_else_and_br_to_function() {
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    i32.const 1
+    (if (result i32) (i32.const 10) else (i32.const 20))))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(10, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    i32.const 0
+    (if (result i32) (i32.const 10) else (i32.const 20))))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(20, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    i32.const 7
+    br 0))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(7, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    (block
+      i32.const 9
+      return)
+    i32.const 1))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(9, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_size_is_page_count() {
+        let src = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (result i32)
+    memory.size))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(1, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn i64_store_load() {
+        let src = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (result i64)
+    (i64.store (i32.const 8) (i64.const 0x0102030405060708))
+    (i64.load (i32.const 8))))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i64(0x0102030405060708, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn loop_counts_to_three() {
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    (local i32)
+    i32.const 0
+    local.set 0
+    (block
+      (loop
+        local.get 0
+        i32.const 3
+        i32.ge_s
+        br_if 1
+        local.get 0
+        i32.const 1
+        i32.add
+        local.set 0
+        br 0))
+    local.get 0))
+"#;
+        let (_, out) = run(src, 10000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(3, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_adds() {
+        let src = r#"
+(module
+  (func (export "main") (result i32)
+    (call 1 (i32.const 2) (i32.const 3)))
+  (func (param i32) (param i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.add))
+"#;
+        let (_, out) = run(src, 1000);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(5, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn with_echo(src: &str) -> Instance {
+        let module = decode_text(src).unwrap();
+        let mut plugins = HashSet::new();
+        plugins.insert((0, 0));
+        Instance::instantiate_with(module, plugins, Vec::new(), 16).unwrap()
+    }
+
+    #[test]
+    fn program_2_echo() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (i32.add
+      (host.invoke Echo (i32.const 41))
+      (i32.const 1))))
+"#;
+        let mut inst = with_echo(src);
+        let out = inst.invoke("main", &[], 1000).unwrap();
+        match out {
+            ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.remaining_fuel, 998);
+        let call = inst.machine.pending_host_call.as_ref().unwrap();
+        assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
+        assert_eq!(
+            inst.machine.continuations[0].call_frames[0].instruction_index,
+            2
+        );
+        let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(inst.machine.remaining_fuel, 995);
+        inst = with_echo(src);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        assert_eq!(
+            inst.continue_run(),
+            Err(HostInterfaceError::HostCallPending)
+        );
+        let out = inst.trap_pending(TrapKind::HostTypeMismatch).unwrap();
+        match out {
+            ExecOutcome::Trapped {
+                trap_kind: TrapKind::HostTypeMismatch,
+                ..
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(inst.machine.pending_host_call.is_none());
+    }
+
+    #[test]
+    fn program_7_capability_round_trip() {
+        let src = r#"
+(module
+  (host.import UseCapability
+    (pluginId 0)
+    (methodId 0)
+    (param Capability)
+    (result i32))
+  (func (export "main") (param Capability) (result i32)
+    (host.invoke UseCapability (local.get 0))))
+"#;
+        let mut inst = with_echo(src);
+        let handle = CapHandle {
+            table_index: 1,
+            generation: 1,
+        };
+        inst.grant_cap(handle, b"echo-cap".to_vec());
+        let cap = Value::capability(handle, Label::Confidential);
+        let out = inst.invoke("main", &[cap], 1000).unwrap();
+        match out {
+            ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        let call = inst.machine.pending_host_call.as_ref().unwrap();
+        assert_eq!(call.arguments[0], cap);
+        assert_eq!(call.capabilities, vec![handle]);
+        let out = inst.resume(vec![Value::i32(7, Label::Public)]).unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(7, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn null_capability_traps_on_invoke() {
+        let src = r#"
+(module
+  (host.import UseCapability
+    (pluginId 0)
+    (methodId 0)
+    (param Capability)
+    (result i32))
+  (func (export "main") (result i32)
+    (local Capability)
+    (host.invoke UseCapability (local.get 0))))
+"#;
+        let mut inst = with_echo(src);
+        let out = inst.invoke("main", &[], 1000).unwrap();
+        match out {
+            ExecOutcome::Trapped {
+                trap_kind: TrapKind::InvalidCapability,
+                program_counter,
+            } => {
+                assert_eq!(program_counter.instruction_index, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(inst.machine.pending_host_call.is_none());
     }
 }

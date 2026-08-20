@@ -134,6 +134,13 @@ impl Value {
         }
     }
 
+    pub fn as_cap(self) -> Option<CapHandle> {
+        match self.payload {
+            ValuePayload::Capability(h) => Some(h),
+            _ => None,
+        }
+    }
+
     pub fn default_for(ty: ValueType) -> Self {
         match ty {
             ValueType::I32 => Self::i32(0, Label::Public),

@@ -351,9 +351,7 @@ impl<'a> Parser<'a> {
                     self.parse_instruction_form(&mut instructions, module)?;
                 }
                 self.expect_rparen()?;
-                if instructions.last() != Some(&Instruction::End) {
-                    instructions.push(Instruction::End);
-                }
+                close_implicit_ends(&mut instructions);
                 let ty = FunctionType {
                     parameters,
                     results,
@@ -410,9 +408,7 @@ impl<'a> Parser<'a> {
                             while !matches!(self.peek()?, Some(Token::RParen)) {
                                 self.parse_instruction_form(&mut insts, module)?;
                             }
-                            if insts.last() != Some(&Instruction::End) {
-                                insts.push(Instruction::End);
-                            }
+                            close_implicit_ends(&mut insts);
                             GlobalInit::ConstantExpression(insts)
                         }
                     } else {
@@ -422,9 +418,7 @@ impl<'a> Parser<'a> {
                         while !matches!(self.peek()?, Some(Token::RParen)) {
                             self.parse_instruction_form(&mut insts, module)?;
                         }
-                        if insts.last() != Some(&Instruction::End) {
-                            insts.push(Instruction::End);
-                        }
+                        close_implicit_ends(&mut insts);
                         GlobalInit::ConstantExpression(insts)
                     }
                 } else {
@@ -432,9 +426,7 @@ impl<'a> Parser<'a> {
                     while !matches!(self.peek()?, Some(Token::RParen)) {
                         self.parse_instruction_form(&mut insts, module)?;
                     }
-                    if insts.last() != Some(&Instruction::End) {
-                        insts.push(Instruction::End);
-                    }
+                    close_implicit_ends(&mut insts);
                     GlobalInit::ConstantExpression(insts)
                 };
                 self.expect_rparen()?;
@@ -744,6 +736,23 @@ impl<'a> Parser<'a> {
             Token::Int(n) => Ok(n),
             other => Err(DecodeError::new(format!("expected i64, found {other:?}"))),
         }
+    }
+}
+
+fn close_implicit_ends(instructions: &mut Vec<Instruction>) {
+    let mut depth: i32 = 0;
+    for inst in instructions.iter() {
+        match inst {
+            Instruction::Block { .. } | Instruction::Loop { .. } | Instruction::If { .. } => {
+                depth += 1;
+            }
+            Instruction::End => depth -= 1,
+            _ => {}
+        }
+    }
+    while depth >= 0 {
+        instructions.push(Instruction::End);
+        depth -= 1;
     }
 }
 
