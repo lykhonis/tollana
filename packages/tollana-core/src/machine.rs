@@ -74,10 +74,46 @@ pub struct HostCall {
     pub continuation_identifier: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum QuotaDimension {
+    MemoryBytes = 1,
+    HostCallCount = 2,
+    IoBytes = 3,
+    Tokens = 4,
+    WallTimeMillis = 5,
+    ConcurrentGoals = 6,
+}
+
+impl QuotaDimension {
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::MemoryBytes),
+            2 => Some(Self::HostCallCount),
+            3 => Some(Self::IoBytes),
+            4 => Some(Self::Tokens),
+            5 => Some(Self::WallTimeMillis),
+            6 => Some(Self::ConcurrentGoals),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuotaSlot {
+    pub dimension: QuotaDimension,
+    pub remaining: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspendReason {
     HostInvoke,
     OutOfFuel,
+    QuotaExhausted { dimension: QuotaDimension },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +139,7 @@ pub struct MachineState {
     pub linear_memory: Vec<u8>,
     pub globals: Vec<Value>,
     pub remaining_fuel: u64,
+    pub quotas: Vec<QuotaSlot>,
     pub capability_table: Vec<CapabilityTableEntry>,
     pub pending_host_call: Option<HostCall>,
     pub active_continuation_identifier: Option<u32>,
@@ -116,6 +153,7 @@ impl MachineState {
             linear_memory: Vec::new(),
             globals: Vec::new(),
             remaining_fuel: 0,
+            quotas: Vec::new(),
             capability_table: Vec::new(),
             pending_host_call: None,
             active_continuation_identifier: None,

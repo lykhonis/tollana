@@ -1,4 +1,4 @@
-use crate::machine::{ProgramCounter, TrapKind};
+use crate::machine::{ProgramCounter, QuotaDimension, TrapKind};
 use crate::snapshot::PluginIdentity;
 use crate::value::{Label, Value, ValuePayload, ValueType};
 
@@ -38,6 +38,19 @@ pub enum JournalEventKind {
     },
     FuelResumed {
         remaining_fuel: u64,
+    },
+    QuotaConsumed {
+        dimension: QuotaDimension,
+        amount: u64,
+        remaining: u64,
+    },
+    QuotaExhausted {
+        dimension: QuotaDimension,
+        program_counter: ProgramCounter,
+    },
+    QuotaAdded {
+        dimension: QuotaDimension,
+        remaining: u64,
     },
     HostCallSuspended {
         plugin_id: u32,
@@ -88,6 +101,9 @@ impl JournalEventKind {
             Self::InstructionStepped { .. } => "InstructionStepped",
             Self::FuelSuspended { .. } => "FuelSuspended",
             Self::FuelResumed { .. } => "FuelResumed",
+            Self::QuotaConsumed { .. } => "QuotaConsumed",
+            Self::QuotaExhausted { .. } => "QuotaExhausted",
+            Self::QuotaAdded { .. } => "QuotaAdded",
             Self::HostCallSuspended { .. } => "HostCallSuspended",
             Self::HostCallResumed { .. } => "HostCallResumed",
             Self::Trapped { .. } => "Trapped",

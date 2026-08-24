@@ -3,7 +3,8 @@ use crate::plugin::{Plugin, PluginResult};
 use std::collections::HashMap;
 use tollana_core::{
     assign_local_ids, decode_text, hash_plugin_identity, ExecOutcome, HostRebind, Instance, Module,
-    PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, SuspendReason, Value,
+    PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaSlot, SuspendReason,
+    Value,
 };
 
 struct Slot {
@@ -16,6 +17,7 @@ pub struct Host {
     slots: Vec<Slot>,
     bound: bool,
     instance: Option<Instance>,
+    quotas: Vec<QuotaSlot>,
 }
 
 impl Default for Host {
@@ -30,6 +32,7 @@ impl Host {
             slots: Vec::new(),
             bound: false,
             instance: None,
+            quotas: Vec::new(),
         }
     }
 
@@ -80,6 +83,10 @@ impl Host {
         self.instantiate(module)
     }
 
+    pub fn set_quotas(&mut self, quotas: Vec<QuotaSlot>) {
+        self.quotas = quotas;
+    }
+
     pub fn instantiate(&mut self, module: Module) -> Result<(), HostError> {
         if !self.bound {
             self.bind()?;
@@ -101,6 +108,7 @@ impl Host {
             &bindings,
             Vec::new(),
             16,
+            &self.quotas,
         )?);
         Ok(())
     }

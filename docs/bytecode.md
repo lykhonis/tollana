@@ -156,6 +156,7 @@ MachineState
 ├── linearMemory                         untyped bytes; length = pageCount × 65536
 ├── globals[]                            Value
 ├── remainingFuel                        u64
+├── quotas[]                             QuotaSlot (instance-level; absent dimension = unlimited)
 ├── capabilityTable[]                    CapabilityTableEntry
 ├── pendingHostCall                      optional HostCall
 ├── activeContinuationIdentifier         optional u32
@@ -197,9 +198,14 @@ HostCall
 ├── capabilities[]                       CapHandle subsequence of arguments
 └── continuationIdentifier               u32
 
+QuotaSlot
+├── dimension                            u8  ; RFC 0001 §12 codes; not 0
+└── remaining                            u64
+
 SuspendReason
 ├── host.invoke
-└── OutOfFuel
+├── OutOfFuel
+└── QuotaExhausted                       dimension (u8)
 ```
 
 `ProgramCounter` of the current frame is the pair `(functionIndex, instructionIndex)` stored **in** that `CallFrame`. Prose MAY say “program counter.”
@@ -210,7 +216,7 @@ SuspendReason
 flowchart TB
   subgraph HostBoundary[Host process — not IR bytes]
     PluginMap["plugin map: pluginId → content hash + impl"]
-    Quotas["other quotas: tokens, wall time, I/O"]
+    Quotas["quota policy at Instantiate"]
     Scheduler["cooperative scheduler"]
   end
 
@@ -219,6 +225,7 @@ flowchart TB
     MEM["linearMemory — untyped bytes"]
     GLO[globals]
     FUEL[remainingFuel]
+    QSLOTS[quotas[]]
     CAP[capabilityTable]
     PHC["pendingHostCall — 0 or 1"]
     subgraph C[Continuation — v0: one live]
@@ -228,7 +235,7 @@ flowchart TB
     end
   end
 
-  Scheduler -->|"Continue / Resume / AddFuel"| MS
+  Scheduler -->|"Continue / Resume / AddFuel / AddQuota"| MS
   PluginMap -.->|"resolves host.invoke"| PHC
   C -->|"yield"| PHC
   PHC -->|"Resume Value or Trap"| C
@@ -249,10 +256,11 @@ On each **step**, the implementation MUST:
 
 1. Let `frame` be the top `CallFrame`. If `instructionIndex` is out of range of that function’s decoded stream, MUST trap `InvalidProgramCounter` (malformed execution; validated modules never reach this if `br` / `return` follow this spec).
 2. **Fuel check (before the instruction):** if `remainingFuel == 0`, MUST suspend with `SuspendReason.OutOfFuel` **without** executing and **without** advancing `instructionIndex`. MUST NOT set `pendingHostCall`. After `AddFuel`, the host MUST call `Continue` (not `Resume`). That `Continue` MUST re-attempt the **same** instruction, including a new fuel check.
-3. Subtract `1` from `remainingFuel` (decrement only when `remainingFuel >= 1`).
-4. Execute `instruction` per [Instruction Reference](#instruction-reference).
+3. **Quota check (before the instruction, after the fuel check):** if the instruction is `host.invoke` and a `HostCallCount` slot is present with `remaining == 0`, MUST suspend with `SuspendReason.QuotaExhausted` for that dimension **without** executing, **without** charging fuel, and **without** advancing `instructionIndex`. MUST NOT set `pendingHostCall`. After `AddQuota`, the host MUST call `Continue` (not `Resume`).
+4. Subtract `1` from `remainingFuel` (decrement only when `remainingFuel >= 1`).
+5. Execute `instruction` per [Instruction Reference](#instruction-reference). A successful `host.invoke` that sets `pendingHostCall` MUST then decrement `HostCallCount.remaining` by 1 when that slot is present.
 
-**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `SnapshotCore`, and `RestoreCore` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12).
+**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `AddQuota`, `ConsumeQuota`, `SnapshotCore`, and `RestoreCore` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12). Quota slots are independent of fuel.
 
 **Traps and `instructionIndex`:** a trap MUST leave `instructionIndex` at the instruction that was executing (the one that just consumed fuel, if any). Traps MUST NOT advance `instructionIndex` past that instruction. Operands already popped by that instruction are **not** pushed back.
 
@@ -1312,19 +1320,20 @@ RFC 0001 owns the on-disk AEAD/checksum **container** ([RFC 0001](architecture.m
 - Linear memory **bytes** (full dump in v0; dirty-page later).
 - `globals[]`.
 - `remainingFuel`.
+- `quotas[]`: zero or more `{dimension, remaining}` slots, unique dimension codes, strictly increasing `dimension` in the canonical encoding ([RFC 0001](architecture.md) §12).
 - `capabilityTable` (`tableIndex`, `generation`, `live`; host-side identity opaque to IR but MUST be carried as opaque bytes so the host can rebind).
 - At most one `HostCall` (all fields).
 - `Label` on **every** `Value`.
 
 ### Host MUST restore too (not specified as IR bytes)
 
-Opaque plugin blobs, scheduler queues, non-fuel quotas. The identity map **is** in TIRS (above). `RestoreCore` MUST reject if the host-supplied implementations’ content hashes or local `pluginId`s disagree with the snapshot map.
+Opaque plugin blobs and scheduler queues. Quota slots **are** in TIRS (above). The identity map **is** in TIRS. `RestoreCore` MUST reject if the host-supplied implementations’ content hashes or local `pluginId`s disagree with the snapshot map.
 
 `RestoreCore` MUST reject (fail-fast, not load-and-later-trap) if any restored `Capability` `Value` (stack, locals, globals, `HostCall.arguments`) names a `(tableIndex, generation)` that is missing, not `live`, or disagrees with the restored table. Corrupting a generation on purpose is a **rejected restore**, not program-7 “use traps.”
 
 ### Conformance canonical encoding (tests only)
 
-Not the production snapshot file. Magic `54 49 52 53` (“TIRS”), `u16` version `1`. Little-endian. Purpose: bitwise comparison in conformance program 3.
+Not the production snapshot file. Magic `54 49 52 53` (“TIRS”). TIRS `formatVersion` is the snapshot encoding version and is distinct from the module `.tirb` `formatVersion`. Little-endian. Purpose: bitwise comparison in conformance program 3.
 
 ```text
 magic:                    54 49 52 53
@@ -1340,6 +1349,10 @@ for each:
   name:                   length-prefixed UTF-8
   version:                length-prefixed UTF-8
 remainingFuel:            u64
+quotaCount:               u32
+for each:
+  dimension:              u8
+  remaining:              u64
 memoryByteLength:         u32
 memoryBytes:              that many bytes
 globalCount:              u32
@@ -1423,6 +1436,7 @@ Canonical encoding of the [Echo worked example](#worked-example-echo) after `hos
 04 00 00 00 45 63 68 6F                         ; name "Echo"
 05 00 00 00 31 2E 30 2E 30                      ; version "1.0.0"
 E6 03 00 00 00 00 00 00                         ; remainingFuel 998
+00 00 00 00                                     ; quotaCount 0
 00 00 00 00                                     ; memoryByteLength 0
 00 00 00 00                                     ; globalCount 0
 00 00 00 00                                     ; capabilityEntryCount 0
@@ -1463,7 +1477,8 @@ Canonical host operations (Rust API names; opcodes in the guest remain WASM text
 Instantiate(
   module: Module,
   pluginMap: host-owned map,          // keys MUST be the module’s pluginId values
-  hostInjectedGlobals: Value[]
+  hostInjectedGlobals: Value[],
+  quotas: QuotaSlot[]                 // unique dimensions; MemoryBytes checked against allocated memory
 ) -> Instance | Reject
 
 Invoke(
@@ -1479,10 +1494,12 @@ Continue(instance) -> Completed | Suspended | Trapped | HostInterfaceError
   // If never invoked: MUST return InstanceIdle. If already Completed/Trapped: replay that outcome.
 
 Resume(instance, results: Value[]) -> Completed | Suspended | Trapped
-  // ONLY for SuspendReason.host.invoke. MUST NOT be used for OutOfFuel.
+  // ONLY for SuspendReason.host.invoke. MUST NOT be used for OutOfFuel or QuotaExhausted.
 
 TrapPending(instance, trapKind) -> Trapped
 AddFuel(instance, amount: u64) -> ()   // saturating; MUST NOT run the guest
+AddQuota(instance, dimension, amount: u64) -> ()  // saturating; inserts the slot if absent; MUST NOT run the guest
+ConsumeQuota(instance, dimension, amount: u64) -> ok | insufficient  // no-op success if dimension absent
 SnapshotCore(instance) -> CoreSnapshot
 RestoreCore(snapshot: CoreSnapshot, hostRebind) -> Instance | Reject
 ```
@@ -1495,7 +1512,8 @@ RestoreCore(snapshot: CoreSnapshot, hostRebind) -> Instance | Reject
 4. Allocate `linearMemory` of `pageCount × 65536` bytes, **all zeros**. If `memoryCount = 0`, length 0.
 5. Evaluate globals in order: `ConstantExpression` into `globals[i]`; `HostInjected` from `hostInjectedGlobals` in HostInjected order. `ValueType` MUST match. Injected `Capability` values MUST be installed in `capabilityTable` as live entries.
 6. `continuations = []`, `activeContinuationIdentifier` absent, `pendingHostCall` absent, `remainingFuel = 0`.
-7. Return the instance. MUST NOT execute guest instructions.
+7. Install `quotas`. Duplicate or reserved/unknown `dimension` MUST reject. Sort slots by `dimension` ascending. If `MemoryBytes` is present, `remaining` MUST be ≥ allocated `linearMemory` length; then subtract that length from `remaining`.
+8. Return the instance. MUST NOT execute guest instructions.
 
 ### `Invoke` sequence (normative)
 
@@ -1509,11 +1527,11 @@ RestoreCore(snapshot: CoreSnapshot, hostRebind) -> Instance | Reject
 
 ### `Continue`
 
-MUST apply the **entry checks** then the step loop in [interpreter loop](#interpreter-loop-normative). MUST NOT decrement fuel except as specified per executed instruction. After `OutOfFuel`, the host MUST `AddFuel` then `Continue`. After `host.invoke`, the host MUST `Resume` or `TrapPending`. `Continue` while `pendingHostCall` is set MUST return `HostCallPending` immediately (MUST NOT livelock in no-op steps).
+MUST apply the **entry checks** then the step loop in [interpreter loop](#interpreter-loop-normative). MUST NOT decrement fuel except as specified per executed instruction. After `OutOfFuel`, the host MUST `AddFuel` then `Continue`. After `QuotaExhausted`, the host MUST `AddQuota` then `Continue`. After `host.invoke`, the host MUST `Resume` or `TrapPending`. `Continue` while `pendingHostCall` is set MUST return `HostCallPending` immediately (MUST NOT livelock in no-op steps).
 
 `HostInterfaceError` names: `HostCallPending`, `InstanceIdle`, plus `Resume`/`TrapPending` used without a matching `pendingHostCall`. These are **not** `TrapKind` values.
 
-`Resume` pushes results then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` MUST NOT decrement `remainingFuel`.
+`Resume` pushes results then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` / `AddQuota` / `ConsumeQuota` MUST NOT decrement `remainingFuel`.
 
 ---
 
@@ -1832,6 +1850,9 @@ The journal is architecture-owned. The interpreter SHOULD emit these IR-level ev
 | `InstructionStepped` | `functionIndex`, `instructionIndex`, opcode name (optional; noisy) |
 | `FuelSuspended` | `remainingFuel` (0), `ProgramCounter` |
 | `FuelResumed` | `remainingFuel` after `AddFuel` (guest runs only on the following `Continue`) |
+| `QuotaConsumed` | dimension, amount, remaining after |
+| `QuotaExhausted` | dimension, `ProgramCounter` |
+| `QuotaAdded` | dimension, remaining after |
 | `HostCallSuspended` | `HostCall` identifiers and arity (redact payloads per label policy) |
 | `HostCallResumed` | result `ValueType` + label (payload redaction host-defined) |
 | `Trapped` | `TrapKind`, `ProgramCounter` |

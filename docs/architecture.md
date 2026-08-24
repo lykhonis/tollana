@@ -658,24 +658,37 @@ Nondeterministic inputs (model outputs, network, random, clock) are controlled o
 
 ### Multi-dimensional quotas
 
-Examples:
+Every instance has **instruction fuel** (`remainingFuel`, RFC 0002) and zero or more additional **quota slots**. A missing slot means that dimension is unlimited. Slots are instance-scoped. Hierarchical subtree slices (parent remaining split onto a child instance) are a host policy on `Instantiate` of the child; the IR stores one vector per `MachineState`.
 
-- Instruction fuel
-- Memory
-- Token usage (in/out, per model)
-- I/O bytes and request counts
-- Host-call counts
-- Concurrent goals
-- Wall time (especially for isolated `code.run` children)
+| Code | Dimension | Unit | Core enforcement |
+|------|-----------|------|------------------|
+| `1` | `MemoryBytes` | bytes of linear memory | At `Instantiate`: if present, `remaining` MUST be ≥ allocated memory length; then `remaining` is reduced by that length. No `MemoryGrow` in RFC 0002 v0. |
+| `2` | `HostCallCount` | `host.invoke` executions | Before executing `host.invoke`, if `remaining == 0`, suspend `QuotaExhausted` without executing and without charging fuel. On a successful `host.invoke`, decrement `remaining` by 1. |
+| `3` | `IoBytes` | bytes | Stored and snapshotted. Decremented only via host `ConsumeQuota`. |
+| `4` | `Tokens` | tokens | Stored and snapshotted. Decremented only via host `ConsumeQuota`. |
+| `5` | `WallTimeMillis` | milliseconds | Stored and snapshotted. Decremented only via host `ConsumeQuota`. |
+| `6` | `ConcurrentGoals` | live goals | Stored and snapshotted. Not decremented by the interpreter; goal hosts MAY `ConsumeQuota`. |
 
-Quotas may be **hierarchical** (subtree inherits or receives a slice of parent budget). Isolated child machines for untrusted code get their own tight caps independent of leftover parent budget except where the host explicitly slices.
+Code `0` is reserved and MUST NOT appear. Unknown codes MUST be rejected at instantiate and at TIRS decode.
+
+Instruction fuel is **not** a slot in this vector. It remains `remainingFuel` with `OutOfFuel` semantics (RFC 0002). Fuel and quota slots MUST be independent: exhausting one MUST NOT decrement the other.
+
+### Exhaustion
+
+- Fuel: `SuspendReason.OutOfFuel` as specified in RFC 0002.
+- Any quota slot at `remaining == 0` when the next instruction would consume it: `SuspendReason.QuotaExhausted` with that dimension. MUST NOT trap. MUST NOT return a host-interface reject for a running guest. MUST NOT set `pendingHostCall`. MUST NOT advance `instructionIndex`. MUST NOT decrement `remainingFuel`.
+- Fuel is checked first. If both fuel and a quota are exhausted, the outcome is `OutOfFuel`.
+- After `QuotaExhausted`, the host MUST `AddQuota(dimension, amount)` then `Continue` (not `Resume`). `Continue` re-attempts the same instruction, including a new fuel check and a new quota check.
+
+`AddQuota` is saturating, MUST NOT run the guest, and MUST NOT decrement fuel. If the dimension is absent, `AddQuota` inserts a slot with `remaining = amount`. `ConsumeQuota(dimension, amount)` succeeds without effect if the dimension is absent (unlimited). If present and `remaining < amount`, it MUST fail without modifying `remaining`.
+
+### Snapshots and journal
+
+Remaining slots (dimension + remaining) MUST round-trip in TIRS ([RFC 0002](bytecode.md) IR-level snapshot surface). Snapshot and restore MUST NOT charge fuel or quotas. Journal events `QuotaConsumed`, `QuotaExhausted`, and `QuotaAdded` are specified in §13.
 
 ### Integration
 
-- Enforced by the core scheduler / interpreter and by plugin metering
-- Remaining quotas are part of snapshots
-- Journal records consumption for billing and reports
-- Host binds quotas to billing accounts or tenants at instance creation
+The host binds slots at instance creation (and MAY map them to billing accounts). Isolated child machines receive their own slots; leftover parent budget is not inherited unless the host explicitly slices.
 
 ### Billing hook
 
@@ -726,6 +739,9 @@ body:         event-specific fields (in-process; not a file layout)
 | `InstructionStepped` | Each instruction (optional; **default off**) | `functionIndex`, `instructionIndex`, opcode name |
 | `FuelSuspended` | Guest suspends `OutOfFuel` | `remainingFuel` (0), `ProgramCounter` |
 | `FuelResumed` | Host `AddFuel` | `remainingFuel` after add (guest runs only on the following `Continue`) |
+| `QuotaConsumed` | a quota slot is decremented | dimension code, amount, remaining after |
+| `QuotaExhausted` | guest suspends `QuotaExhausted` | dimension code, `ProgramCounter` |
+| `QuotaAdded` | Host `AddQuota` | dimension code, remaining after |
 | `HostCallSuspended` | `host.invoke` suspend | `pluginId`, `methodId`, arity; argument types/labels; payloads redacted per policy |
 | `HostCallResumed` | successful `Resume` | result types/labels; payloads redacted per policy |
 | `Trapped` | guest trap | `TrapKind`, `ProgramCounter` |
@@ -744,7 +760,7 @@ body:         event-specific fields (in-process; not a file layout)
 
 A byte-level `snapshot` / `restore` MUST emit `SnapshotCoreTaken` / `SnapshotCoreRestored` because it calls `SnapshotCore` / `RestoreCore`.
 
-**Default sink:** MUST redact `Confidential` and `Secret` **payloads** (types and labels remain). MUST NOT emit `InstructionStepped` unless the host enables it. Appending journal events MUST NOT decrement IR fuel.
+**Default sink:** MUST redact `Confidential` and `Secret` **payloads** (types and labels remain). MUST NOT emit `InstructionStepped` unless the host enables it. Appending journal events MUST NOT decrement IR fuel or quota slots.
 
 **Same-process restore:** attaching the **same** sink MUST continue `sequence` (no reset, no duplicate prior events). New restore events MAY append with the next sequences. A different or empty sink starts at `sequence = 0`.
 

@@ -1,5 +1,6 @@
 use crate::machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, HostCall, ProgramCounter,
+    QuotaDimension, QuotaSlot,
 };
 use crate::value::{CapHandle, Label, Value, ValuePayload, ValueType};
 use std::fmt;
@@ -52,6 +53,7 @@ pub struct CoreSnapshot {
     pub entry_name: String,
     pub plugin_identities: Vec<PluginIdentity>,
     pub remaining_fuel: u64,
+    pub quotas: Vec<QuotaSlot>,
     pub linear_memory: Vec<u8>,
     pub globals: Vec<Value>,
     pub capability_table: Vec<CapabilityTableEntry>,
@@ -324,6 +326,13 @@ pub fn encode_tirs(snapshot: &CoreSnapshot) -> Vec<u8> {
         w.name(&id.version);
     }
     w.u64(snapshot.remaining_fuel);
+    let mut quotas = snapshot.quotas.clone();
+    quotas.sort_by_key(|q| q.dimension);
+    w.u32(quotas.len() as u32);
+    for q in &quotas {
+        w.u8(q.dimension.code());
+        w.u64(q.remaining);
+    }
     w.u32(snapshot.linear_memory.len() as u32);
     w.bytes(&snapshot.linear_memory);
     w.u32(snapshot.globals.len() as u32);
@@ -415,6 +424,27 @@ pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
         });
     }
     let remaining_fuel = r.u64()?;
+    let quota_count = r.u32()? as usize;
+    let mut quotas = Vec::with_capacity(quota_count);
+    let mut last_dim: Option<u8> = None;
+    for _ in 0..quota_count {
+        let code = r.u8()?;
+        let Some(dimension) = QuotaDimension::from_code(code) else {
+            return Err(SnapshotError::new(format!(
+                "unknown quota dimension {code}"
+            )));
+        };
+        if last_dim.is_some_and(|d| code <= d) {
+            return Err(SnapshotError::new(
+                "quota dimensions must be strictly increasing",
+            ));
+        }
+        last_dim = Some(code);
+        quotas.push(QuotaSlot {
+            dimension,
+            remaining: r.u64()?,
+        });
+    }
     let mem_len = r.u32()? as usize;
     let linear_memory = r.bytes(mem_len)?.to_vec();
     let global_count = r.u32()? as usize;
@@ -506,6 +536,7 @@ pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
         entry_name,
         plugin_identities,
         remaining_fuel,
+        quotas,
         linear_memory,
         globals,
         capability_table,
@@ -574,6 +605,7 @@ E6 03 00 00 00 00 00 00
 00 00 00 00
 00 00 00 00
 00 00 00 00
+00 00 00 00
 01
 00 00 00 00
 01 00 00 00
@@ -605,6 +637,7 @@ E6 03 00 00 00 00 00 00
         let snap = decode_tirs(&bytes).expect("decode TIRS");
         assert_eq!(snap.entry_name, "main");
         assert_eq!(snap.remaining_fuel, 998);
+        assert!(snap.quotas.is_empty());
         assert_eq!(snap.module_bytes.len(), 128);
         assert_eq!(snap.plugin_identities.len(), 1);
         assert_eq!(snap.plugin_identities[0].name, "Echo");
