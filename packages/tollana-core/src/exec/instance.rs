@@ -5,7 +5,9 @@ use crate::container::{
 use crate::decode::{decode_binary, encode_binary, ExportKind, GlobalInit};
 use crate::instruction::Instruction;
 use crate::journal::{join_labels, JournalEventKind, JournalSink, JournalValue, MemoryJournal};
-use crate::machine::{Continuation, QuotaDimension, QuotaSlot, SuspendReason, TrapKind};
+use crate::machine::{
+    Continuation, QuotaDimension, QuotaSlot, SuspendReason, TrapKind, MAX_CONTINUATIONS,
+};
 use crate::snapshot::{
     capability_handle_live, decode_tirs, encode_tirs, snapshot_capability_values, CoreSnapshot,
     HostRebind,
@@ -123,7 +125,7 @@ impl Instance {
             remaining_fuel: 0,
             quotas,
             capability_table: Vec::new(),
-            pending_host_call: None,
+            pending_host_calls: Vec::new(),
             active_continuation_identifier: None,
             continuations: Vec::new(),
         };
@@ -154,11 +156,71 @@ impl Instance {
         arguments: &[Value],
         initial_fuel: u64,
     ) -> Result<ExecOutcome, HostInterfaceError> {
+        self.reject_if_trapped()?;
+        if !self.machine.continuations.is_empty() || !self.machine.pending_host_calls.is_empty() {
+            return Err(HostInterfaceError::Reject {
+                message: "instance has live continuations".into(),
+            });
+        }
+        let function_index = self.prepare_export(export_name, arguments)?;
+        self.entry_export_name = export_name.to_string();
+        self.machine.remaining_fuel = initial_fuel;
+        self.machine.pending_host_calls.clear();
+        self.machine.continuations = vec![Continuation {
+            continuation_identifier: 0,
+            value_stack: Vec::new(),
+            call_frames: Vec::new(),
+        }];
+        self.machine.active_continuation_identifier = Some(0);
+        self.last_outcome = None;
+        if let Err(kind) = self.enter_frame(function_index, arguments.to_vec(), None) {
+            let pc = ProgramCounter {
+                function_index,
+                instruction_index: 0,
+            };
+            return Ok(self.trap(kind, pc));
+        }
+        self.continue_run()
+    }
+
+    pub fn spawn_continuation(
+        &mut self,
+        export_name: &str,
+        arguments: &[Value],
+    ) -> Result<(u32, ExecOutcome), HostInterfaceError> {
+        self.reject_if_trapped()?;
+        let function_index = self.prepare_export(export_name, arguments)?;
+        let id = self.allocate_continuation_id()?;
+        self.machine.continuations.push(Continuation {
+            continuation_identifier: id,
+            value_stack: Vec::new(),
+            call_frames: Vec::new(),
+        });
+        self.machine.active_continuation_identifier = Some(id);
+        if let Err(kind) = self.enter_frame(function_index, arguments.to_vec(), None) {
+            let pc = ProgramCounter {
+                function_index,
+                instruction_index: 0,
+            };
+            return Ok((id, self.trap(kind, pc)));
+        }
+        Ok((id, self.continue_run()?))
+    }
+
+    fn reject_if_trapped(&self) -> Result<(), HostInterfaceError> {
         if matches!(self.last_outcome, Some(ExecOutcome::Trapped { .. })) {
             return Err(HostInterfaceError::Reject {
                 message: "instance trapped".into(),
             });
         }
+        Ok(())
+    }
+
+    fn prepare_export(
+        &mut self,
+        export_name: &str,
+        arguments: &[Value],
+    ) -> Result<u32, HostInterfaceError> {
         let export = self
             .module
             .exports
@@ -189,24 +251,33 @@ impl Instance {
                 }
             }
         }
-        self.entry_export_name = export_name.to_string();
-        self.machine.remaining_fuel = initial_fuel;
-        self.machine.pending_host_call = None;
-        self.machine.continuations = vec![Continuation {
-            continuation_identifier: 0,
-            value_stack: Vec::new(),
-            call_frames: Vec::new(),
-        }];
-        self.machine.active_continuation_identifier = Some(0);
-        self.last_outcome = None;
-        if let Err(kind) = self.enter_frame(function_index, arguments.to_vec(), None) {
-            let pc = ProgramCounter {
-                function_index,
-                instruction_index: 0,
-            };
-            return Ok(self.trap(kind, pc));
+        Ok(function_index)
+    }
+
+    fn allocate_continuation_id(&self) -> Result<u32, HostInterfaceError> {
+        if self.machine.continuations.len() >= MAX_CONTINUATIONS {
+            return Err(HostInterfaceError::Reject {
+                message: "continuation cap exceeded".into(),
+            });
         }
-        self.continue_run()
+        let mut used: Vec<u32> = self
+            .machine
+            .continuations
+            .iter()
+            .map(|c| c.continuation_identifier)
+            .collect();
+        used.sort_unstable();
+        let mut next = 0u32;
+        for id in used {
+            if id == next {
+                next = next.checked_add(1).ok_or(HostInterfaceError::Reject {
+                    message: "continuation identifier space exhausted".into(),
+                })?;
+            } else if id > next {
+                break;
+            }
+        }
+        Ok(next)
     }
 
     pub fn add_fuel(&mut self, amount: u64) {
@@ -283,25 +354,21 @@ impl Instance {
         self.ensure_cap(handle, opaque);
     }
 
-    pub fn resume(&mut self, results: Vec<Value>) -> Result<ExecOutcome, HostInterfaceError> {
-        let pending = self
+    pub fn resume(
+        &mut self,
+        continuation_identifier: u32,
+        results: Vec<Value>,
+    ) -> Result<ExecOutcome, HostInterfaceError> {
+        let pos = self
             .machine
-            .pending_host_call
-            .take()
+            .pending_host_calls
+            .iter()
+            .position(|c| c.continuation_identifier == continuation_identifier)
             .ok_or(HostInterfaceError::Reject {
                 message: "resume without pending host call".into(),
             })?;
-        if !matches!(
-            self.last_outcome,
-            Some(ExecOutcome::Suspended {
-                reason: SuspendReason::HostInvoke
-            })
-        ) {
-            self.machine.pending_host_call = Some(pending);
-            return Err(HostInterfaceError::Reject {
-                message: "resume is only for host.invoke".into(),
-            });
-        }
+        let pending = self.machine.pending_host_calls.remove(pos);
+        self.machine.active_continuation_identifier = Some(continuation_identifier);
         let import = self
             .module
             .host_imports
@@ -360,7 +427,7 @@ impl Instance {
             capability_table: self.machine.capability_table.clone(),
             active_continuation_identifier: self.machine.active_continuation_identifier,
             continuations: self.machine.continuations.clone(),
-            pending_host_call: self.machine.pending_host_call.clone(),
+            pending_host_calls: self.machine.pending_host_calls.clone(),
         };
         self.emit(
             JournalEventKind::SnapshotCoreTaken {
@@ -501,7 +568,7 @@ impl Instance {
                 }
             }
         }
-        let last_outcome = if snapshot.pending_host_call.is_some() {
+        let last_outcome = if !snapshot.pending_host_calls.is_empty() {
             Some(ExecOutcome::Suspended {
                 reason: SuspendReason::HostInvoke,
             })
@@ -535,7 +602,7 @@ impl Instance {
                 remaining_fuel: snapshot.remaining_fuel,
                 quotas: snapshot.quotas,
                 capability_table: snapshot.capability_table,
-                pending_host_call: snapshot.pending_host_call,
+                pending_host_calls: snapshot.pending_host_calls,
                 active_continuation_identifier: snapshot.active_continuation_identifier,
                 continuations: snapshot.continuations,
             },
@@ -560,12 +627,21 @@ impl Instance {
         Ok(inst)
     }
 
-    pub fn trap_pending(&mut self, kind: TrapKind) -> Result<ExecOutcome, HostInterfaceError> {
-        if self.machine.pending_host_call.take().is_none() {
-            return Err(HostInterfaceError::Reject {
+    pub fn trap_pending(
+        &mut self,
+        continuation_identifier: u32,
+        kind: TrapKind,
+    ) -> Result<ExecOutcome, HostInterfaceError> {
+        let pos = self
+            .machine
+            .pending_host_calls
+            .iter()
+            .position(|c| c.continuation_identifier == continuation_identifier)
+            .ok_or(HostInterfaceError::Reject {
                 message: "trap_pending without pending host call".into(),
-            });
-        }
+            })?;
+        self.machine.pending_host_calls.remove(pos);
+        self.machine.active_continuation_identifier = Some(continuation_identifier);
         let pc = self.pc();
         Ok(self.trap(kind, pc))
     }

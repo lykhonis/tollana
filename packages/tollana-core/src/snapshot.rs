@@ -1,8 +1,9 @@
 use crate::machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, HostCall, ProgramCounter,
-    QuotaDimension, QuotaSlot,
+    QuotaDimension, QuotaSlot, MAX_CONTINUATIONS,
 };
 use crate::value::{CapHandle, Label, Value, ValuePayload, ValueType};
+use std::collections::HashSet;
 use std::fmt;
 
 const MAGIC: &[u8; 4] = b"TIRS";
@@ -59,7 +60,7 @@ pub struct CoreSnapshot {
     pub capability_table: Vec<CapabilityTableEntry>,
     pub active_continuation_identifier: Option<u32>,
     pub continuations: Vec<Continuation>,
-    pub pending_host_call: Option<HostCall>,
+    pub pending_host_calls: Vec<HostCall>,
 }
 
 struct Reader<'a> {
@@ -366,25 +367,52 @@ pub fn encode_tirs(snapshot: &CoreSnapshot) -> Vec<u8> {
             write_call_frame(&mut w, frame);
         }
     }
-    match &snapshot.pending_host_call {
-        Some(call) => {
-            w.flag(true);
-            w.u32(call.plugin_id);
-            w.u32(call.method_id);
-            w.u32(call.arguments.len() as u32);
-            for v in &call.arguments {
-                write_value(&mut w, v);
-            }
-            w.u32(call.capabilities.len() as u32);
-            for h in &call.capabilities {
-                w.u32(h.table_index);
-                w.u32(h.generation);
-            }
-            w.u32(call.continuation_identifier);
-        }
-        None => w.flag(false),
+    w.u32(snapshot.pending_host_calls.len() as u32);
+    for call in &snapshot.pending_host_calls {
+        write_host_call(&mut w, call);
     }
     w.buf
+}
+
+fn write_host_call(w: &mut Writer, call: &HostCall) {
+    w.u32(call.plugin_id);
+    w.u32(call.method_id);
+    w.u32(call.arguments.len() as u32);
+    for v in &call.arguments {
+        write_value(w, v);
+    }
+    w.u32(call.capabilities.len() as u32);
+    for h in &call.capabilities {
+        w.u32(h.table_index);
+        w.u32(h.generation);
+    }
+    w.u32(call.continuation_identifier);
+}
+
+fn read_host_call(r: &mut Reader<'_>) -> Result<HostCall, SnapshotError> {
+    let plugin_id = r.u32()?;
+    let method_id = r.u32()?;
+    let arg_count = r.u32()? as usize;
+    let mut arguments = Vec::with_capacity(arg_count);
+    for _ in 0..arg_count {
+        arguments.push(read_value(r)?);
+    }
+    let cap_n = r.u32()? as usize;
+    let mut capabilities = Vec::with_capacity(cap_n);
+    for _ in 0..cap_n {
+        capabilities.push(CapHandle {
+            table_index: r.u32()?,
+            generation: r.u32()?,
+        });
+    }
+    let continuation_identifier = r.u32()?;
+    Ok(HostCall {
+        plugin_id,
+        method_id,
+        arguments,
+        capabilities,
+        continuation_identifier,
+    })
 }
 
 pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
@@ -469,12 +497,16 @@ pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
     }
     let active_continuation_identifier = if r.flag()? { Some(r.u32()?) } else { None };
     let cont_count = r.u32()? as usize;
-    if cont_count > 1 {
-        return Err(SnapshotError::new("v0 allows at most one continuation"));
+    if cont_count > MAX_CONTINUATIONS {
+        return Err(SnapshotError::new("continuationCount exceeds cap"));
     }
     let mut continuations = Vec::with_capacity(cont_count);
+    let mut seen_ids = HashSet::new();
     for _ in 0..cont_count {
         let continuation_identifier = r.u32()?;
+        if !seen_ids.insert(continuation_identifier) {
+            return Err(SnapshotError::new("duplicate continuationIdentifier"));
+        }
         let stack_count = r.u32()? as usize;
         let mut value_stack = Vec::with_capacity(stack_count);
         for _ in 0..stack_count {
@@ -501,33 +533,29 @@ pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
             ));
         }
     }
-    let pending_host_call = if r.flag()? {
-        let plugin_id = r.u32()?;
-        let method_id = r.u32()?;
-        let arg_count = r.u32()? as usize;
-        let mut arguments = Vec::with_capacity(arg_count);
-        for _ in 0..arg_count {
-            arguments.push(read_value(&mut r)?);
+    let pending_count = r.u32()? as usize;
+    if pending_count > MAX_CONTINUATIONS {
+        return Err(SnapshotError::new("pendingHostCallCount exceeds cap"));
+    }
+    let mut pending_host_calls = Vec::with_capacity(pending_count);
+    let mut pending_ids = HashSet::new();
+    for _ in 0..pending_count {
+        let call = read_host_call(&mut r)?;
+        if !continuations
+            .iter()
+            .any(|c| c.continuation_identifier == call.continuation_identifier)
+        {
+            return Err(SnapshotError::new(
+                "pending HostCall continuationIdentifier missing from continuations",
+            ));
         }
-        let cap_n = r.u32()? as usize;
-        let mut capabilities = Vec::with_capacity(cap_n);
-        for _ in 0..cap_n {
-            capabilities.push(CapHandle {
-                table_index: r.u32()?,
-                generation: r.u32()?,
-            });
+        if !pending_ids.insert(call.continuation_identifier) {
+            return Err(SnapshotError::new(
+                "duplicate pending HostCall continuationIdentifier",
+            ));
         }
-        let continuation_identifier = r.u32()?;
-        Some(HostCall {
-            plugin_id,
-            method_id,
-            arguments,
-            capabilities,
-            continuation_identifier,
-        })
-    } else {
-        None
-    };
+        pending_host_calls.push(call);
+    }
     if r.remaining() != 0 {
         return Err(SnapshotError::new("trailing TIRS bytes"));
     }
@@ -542,7 +570,7 @@ pub fn decode_tirs(bytes: &[u8]) -> Result<CoreSnapshot, SnapshotError> {
         capability_table,
         active_continuation_identifier,
         continuations,
-        pending_host_call,
+        pending_host_calls,
     })
 }
 
@@ -563,7 +591,7 @@ pub fn snapshot_capability_values(snapshot: &CoreSnapshot) -> Vec<Value> {
             out.extend_from_slice(&frame.locals);
         }
     }
-    if let Some(call) = &snapshot.pending_host_call {
+    for call in &snapshot.pending_host_calls {
         out.extend_from_slice(&call.arguments);
     }
     out
@@ -622,7 +650,7 @@ E6 03 00 00 00 00 00 00
 00 00 00 00
 02 00 00 00
 00
-01
+01 00 00 00
 00 00 00 00
 00 00 00 00
 01 00 00 00
@@ -656,7 +684,7 @@ E6 03 00 00 00 00 00 00
         assert_eq!(snap.active_continuation_identifier, Some(0));
         assert_eq!(snap.continuations.len(), 1);
         assert_eq!(snap.continuations[0].call_frames[0].instruction_index, 2);
-        let call = snap.pending_host_call.as_ref().unwrap();
+        let call = snap.pending_host_calls.first().unwrap();
         assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
         assert_eq!(encode_tirs(&snap), bytes);
     }

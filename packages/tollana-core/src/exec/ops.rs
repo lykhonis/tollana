@@ -510,12 +510,16 @@ impl Instance {
             .iter()
             .map(|v| JournalValue::from_value(v, false))
             .collect();
-        self.machine.pending_host_call = Some(HostCall {
+        let continuation_identifier = self
+            .machine
+            .active_continuation_identifier
+            .expect("active continuation");
+        self.machine.pending_host_calls.push(HostCall {
             plugin_id,
             method_id,
             arguments,
             capabilities,
-            continuation_identifier: 0,
+            continuation_identifier,
         });
         self.emit(
             JournalEventKind::HostCallSuspended {

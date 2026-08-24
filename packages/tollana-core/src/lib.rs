@@ -28,6 +28,7 @@ pub use journal::{
 pub use machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,
     MachineState, ProgramCounter, QuotaDimension, QuotaSlot, SuspendReason, TrapKind,
+    MAX_CONTINUATIONS,
 };
 pub use snapshot::{
     decode_tirs, encode_tirs, CoreSnapshot, HostRebind, PluginIdentity, SnapshotError,

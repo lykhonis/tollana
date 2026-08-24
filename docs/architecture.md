@@ -193,7 +193,7 @@ Two shapes of guest concurrency map onto this:
 | Guest pattern | Core representation |
 |---------------|---------------------|
 | Sequential `async/await` | A single live continuation that suspends on each host call |
-| True concurrency (`Promise.all`, `goal.all`, …) | Multiple sibling continuations. The language runtime / goal layer creates the join; the core only schedules ready continuations |
+| True concurrency (`Promise.all`, `goal.all`, …) | Multiple sibling continuations created by the host `SpawnContinuation` operation (no guest opcode). The language runtime / goal layer creates the join; the core only stores extra `Continuation` instances and schedules ready ones |
 
 Sequential code never needs explicit `spawn` or channels. Those remain available for true parallelism and structured concurrency.
 
@@ -418,7 +418,7 @@ const [a, b] = await Promise.all([
 // or structured goals — see §9
 ```
 
-`Promise.all` / `goal.all` become sibling continuations. The language runtime or goal layer owns the join; the core only schedules ready continuations.
+`Promise.all` / `goal.all` become sibling continuations. Extra fibers are created by the host `SpawnContinuation` operation specified in RFC 0002 (no guest opcode). The language runtime or goal layer owns the join; the core only stores extra `Continuation` instances and schedules ready ones.
 
 ### SDK shape
 
@@ -676,7 +676,7 @@ Instruction fuel is **not** a slot in this vector. It remains `remainingFuel` wi
 ### Exhaustion
 
 - Fuel: `SuspendReason.OutOfFuel` as specified in RFC 0002.
-- Any quota slot at `remaining == 0` when the next instruction would consume it: `SuspendReason.QuotaExhausted` with that dimension. MUST NOT trap. MUST NOT return a host-interface reject for a running guest. MUST NOT set `pendingHostCall`. MUST NOT advance `instructionIndex`. MUST NOT decrement `remainingFuel`.
+- Any quota slot at `remaining == 0` when the next instruction would consume it: `SuspendReason.QuotaExhausted` with that dimension. MUST NOT trap. MUST NOT return a host-interface reject for a running guest. MUST NOT append a `pendingHostCalls` entry. MUST NOT advance `instructionIndex`. MUST NOT decrement `remainingFuel`.
 - Fuel is checked first. If both fuel and a quota are exhausted, the outcome is `OutOfFuel`.
 - After `QuotaExhausted`, the host MUST `AddQuota(dimension, amount)` then `Continue` (not `Resume`). `Continue` re-attempts the same instruction, including a new fuel check and a new quota check.
 

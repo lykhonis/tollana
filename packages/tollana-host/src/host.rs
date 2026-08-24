@@ -159,8 +159,7 @@ impl Host {
                     ) && self
                         .instance
                         .as_ref()
-                        .and_then(|i| i.machine.pending_host_call.as_ref())
-                        .is_some()
+                        .is_some_and(|i| !i.machine.pending_host_calls.is_empty())
                     {
                         return Ok(outcome);
                     }
@@ -174,7 +173,13 @@ impl Host {
         let call = self
             .instance
             .as_ref()
-            .and_then(|i| i.machine.pending_host_call.clone())
+            .and_then(|i| {
+                i.machine
+                    .pending_host_calls
+                    .iter()
+                    .min_by_key(|c| c.continuation_identifier)
+                    .cloned()
+            })
             .ok_or_else(|| HostError::new("no pending host call"))?;
         let idx = self
             .slots
@@ -188,7 +193,7 @@ impl Host {
         match result {
             PluginResult::Immediate(values) => {
                 let inst = self.instance.as_mut().unwrap();
-                Ok(inst.resume(values)?)
+                Ok(inst.resume(call.continuation_identifier, values)?)
             }
             PluginResult::Pending(_) => Ok(ExecOutcome::Suspended {
                 reason: SuspendReason::HostInvoke,

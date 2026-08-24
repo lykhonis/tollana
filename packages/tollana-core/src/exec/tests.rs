@@ -30,7 +30,7 @@ fn program_1_add() {
         other => panic!("{other:?}"),
     }
     assert_eq!(inst.machine.remaining_fuel, 996);
-    assert!(inst.machine.pending_host_call.is_none());
+    assert!(inst.machine.pending_host_calls.is_empty());
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn program_5_oob_load_traps() {
         other => panic!("{other:?}"),
     }
     assert_eq!(inst.machine.remaining_fuel, 998);
-    assert!(inst.machine.pending_host_call.is_none());
+    assert!(inst.machine.pending_host_calls.is_empty());
 }
 
 #[test]
@@ -490,13 +490,13 @@ fn program_2_echo() {
         other => panic!("{other:?}"),
     }
     assert_eq!(inst.machine.remaining_fuel, 998);
-    let call = inst.machine.pending_host_call.as_ref().unwrap();
+    let call = inst.machine.pending_host_calls.first().unwrap();
     assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
     assert_eq!(
         inst.machine.continuations[0].call_frames[0].instruction_index,
         2
     );
-    let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+    let out = inst.resume(0, vec![Value::i32(41, Label::Public)]).unwrap();
     match out {
         ExecOutcome::Completed { results } => {
             assert_eq!(results, vec![Value::i32(42, Label::Public)]);
@@ -510,7 +510,7 @@ fn program_2_echo() {
         inst.continue_run(),
         Err(HostInterfaceError::HostCallPending)
     );
-    let out = inst.trap_pending(TrapKind::HostTypeMismatch).unwrap();
+    let out = inst.trap_pending(0, TrapKind::HostTypeMismatch).unwrap();
     match out {
         ExecOutcome::Trapped {
             trap_kind: TrapKind::HostTypeMismatch,
@@ -518,7 +518,7 @@ fn program_2_echo() {
         } => {}
         other => panic!("{other:?}"),
     }
-    assert!(inst.machine.pending_host_call.is_none());
+    assert!(inst.machine.pending_host_calls.is_empty());
 }
 
 #[test]
@@ -547,10 +547,10 @@ fn program_7_capability_round_trip() {
         } => {}
         other => panic!("{other:?}"),
     }
-    let call = inst.machine.pending_host_call.as_ref().unwrap();
+    let call = inst.machine.pending_host_calls.first().unwrap();
     assert_eq!(call.arguments[0], cap);
     assert_eq!(call.capabilities, vec![handle]);
-    let out = inst.resume(vec![Value::i32(7, Label::Public)]).unwrap();
+    let out = inst.resume(0, vec![Value::i32(7, Label::Public)]).unwrap();
     match out {
         ExecOutcome::Completed { results } => {
             assert_eq!(results, vec![Value::i32(7, Label::Public)]);
@@ -583,7 +583,7 @@ fn null_capability_traps_on_invoke() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(inst.machine.pending_host_call.is_none());
+    assert!(inst.machine.pending_host_calls.is_empty());
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn program_3_snapshot_restore_resume() {
     assert_eq!(label.label_kind, ControlLabelKind::Block);
     assert_eq!(label.result_count, 1);
     assert_eq!(label.stack_height, 0);
-    let call = snap.pending_host_call.as_ref().unwrap();
+    let call = snap.pending_host_calls.first().unwrap();
     assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
     assert_eq!(snap.linear_memory.len(), 0);
     assert!(snap.capability_table.is_empty());
@@ -656,7 +656,7 @@ fn program_3_snapshot_restore_resume() {
     let mut restored = Instance::restore_core(snap, &rebind, None).unwrap();
     assert_eq!(restored.machine.remaining_fuel, 998);
     let out = restored
-        .resume(vec![Value::i32(41, Label::Public)])
+        .resume(0, vec![Value::i32(41, Label::Public)])
         .unwrap();
     match out {
         ExecOutcome::Completed { results } => {
@@ -694,7 +694,7 @@ fn program_3_via_container_bytes() {
     assert_eq!(restored.journal_cursor, cursor);
     let mut inst = restored.instance;
     assert_eq!(inst.machine.remaining_fuel, 998);
-    let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+    let out = inst.resume(0, vec![Value::i32(41, Label::Public)]).unwrap();
     match out {
         ExecOutcome::Completed { results } => {
             assert_eq!(results, vec![Value::i32(42, Label::Public)]);
@@ -763,7 +763,7 @@ fn program_3_via_aead_container() {
     }
     let restored = Instance::restore(&bytes, &rebind, Some(&key), None).unwrap();
     let mut inst = restored.instance;
-    let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
+    let out = inst.resume(0, vec![Value::i32(41, Label::Public)]).unwrap();
     match out {
         ExecOutcome::Completed { results } => {
             assert_eq!(results, vec![Value::i32(42, Label::Public)]);
@@ -1071,7 +1071,7 @@ fn program_2_journal_order_same_process_restore() {
     assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>());
     let out = restored
         .instance
-        .resume(vec![Value::i32(41, Label::Public)])
+        .resume(0, vec![Value::i32(41, Label::Public)])
         .unwrap();
     match out {
         ExecOutcome::Completed { results } => {
@@ -1171,7 +1171,7 @@ fn host_call_quota_exhaust_snapshot_restore_add_quota() {
     assert_eq!(inst.quota_remaining(QuotaDimension::HostCallCount), Some(0));
     let fuel_after_first = inst.machine.remaining_fuel;
     assert_eq!(fuel_after_first, 998);
-    let out = inst.resume(vec![Value::i32(10, Label::Public)]).unwrap();
+    let out = inst.resume(0, vec![Value::i32(10, Label::Public)]).unwrap();
     match out {
         ExecOutcome::Suspended {
             reason:
@@ -1228,7 +1228,7 @@ fn host_call_quota_exhaust_snapshot_restore_add_quota() {
         Some(0)
     );
     match restored
-        .resume(vec![Value::i32(20, Label::Public)])
+        .resume(0, vec![Value::i32(20, Label::Public)])
         .unwrap()
     {
         ExecOutcome::Completed { results } => {
@@ -1303,4 +1303,163 @@ fn memory_quota_remaining_after_allocate() {
         inst.quota_remaining(QuotaDimension::MemoryBytes),
         Some(65536)
     );
+}
+
+const SIBLINGS: &str = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "a") (result i32)
+    (host.invoke Echo (i32.const 1)))
+  (func (export "b") (result i32)
+    (host.invoke Echo (i32.const 2))))
+"#;
+
+fn assert_suspended_invoke(out: ExecOutcome) {
+    match out {
+        ExecOutcome::Suspended {
+            reason: SuspendReason::HostInvoke,
+        } => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+fn assert_completed(out: ExecOutcome, bits: i32) {
+    match out {
+        ExecOutcome::Completed { results } => {
+            assert_eq!(results, vec![Value::i32(bits, Label::Public)]);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn program_8_sibling_host_calls_snapshot_restore_resume() {
+    let mut inst = with_echo(SIBLINGS);
+    assert_suspended_invoke(inst.invoke("a", &[], 1000).unwrap());
+    assert_eq!(inst.machine.remaining_fuel, 998);
+    assert_eq!(inst.machine.continuations.len(), 1);
+    assert_eq!(inst.machine.pending_host_calls.len(), 1);
+    assert_eq!(
+        inst.machine.pending_host_calls[0].continuation_identifier,
+        0
+    );
+    assert_eq!(
+        inst.invoke("a", &[], 1000),
+        Err(HostInterfaceError::Reject {
+            message: "instance has live continuations".into(),
+        })
+    );
+    let fuel_after_first = inst.machine.remaining_fuel;
+    let (id_b, out) = inst.spawn_continuation("b", &[]).unwrap();
+    assert_eq!(id_b, 1);
+    assert_suspended_invoke(out);
+    assert_eq!(inst.machine.remaining_fuel, fuel_after_first - 2);
+    assert_eq!(inst.machine.remaining_fuel, 996);
+    assert_eq!(inst.machine.continuations.len(), 2);
+    assert_eq!(inst.machine.pending_host_calls.len(), 2);
+    let mut pending_ids: Vec<u32> = inst
+        .machine
+        .pending_host_calls
+        .iter()
+        .map(|c| c.continuation_identifier)
+        .collect();
+    pending_ids.sort_unstable();
+    assert_eq!(pending_ids, [0, 1]);
+    assert_eq!(
+        inst.continue_run(),
+        Err(HostInterfaceError::HostCallPending)
+    );
+
+    let snap = inst.snapshot_core();
+    assert_eq!(snap.continuations.len(), 2);
+    assert_eq!(snap.pending_host_calls.len(), 2);
+    assert_eq!(snap.remaining_fuel, 996);
+    let bytes = crate::snapshot::encode_tirs(&snap);
+    let decoded = crate::snapshot::decode_tirs(&bytes).unwrap();
+    assert_eq!(decoded, snap);
+
+    let container = inst.snapshot(Vec::new());
+    let rebind = rebind_from(&inst);
+    drop(inst);
+    let restored = Instance::restore(&container, &rebind, None, None).unwrap();
+    let mut inst = restored.instance;
+    assert_eq!(inst.machine.remaining_fuel, 996);
+    assert_eq!(inst.machine.continuations.len(), 2);
+    assert_eq!(inst.machine.pending_host_calls.len(), 2);
+
+    assert_completed(
+        inst.resume(0, vec![Value::i32(41, Label::Public)]).unwrap(),
+        41,
+    );
+    assert_eq!(inst.machine.remaining_fuel, 995);
+    assert_eq!(inst.machine.continuations.len(), 1);
+    assert_eq!(inst.machine.continuations[0].continuation_identifier, 1);
+    assert_eq!(
+        inst.continue_run(),
+        Err(HostInterfaceError::HostCallPending)
+    );
+    assert_completed(
+        inst.resume(1, vec![Value::i32(42, Label::Public)]).unwrap(),
+        42,
+    );
+    assert_eq!(inst.machine.remaining_fuel, 994);
+    assert!(inst.machine.continuations.is_empty());
+    assert!(inst.machine.pending_host_calls.is_empty());
+}
+
+#[test]
+fn program_8_resume_higher_id_first() {
+    let mut inst = with_echo(SIBLINGS);
+    assert_suspended_invoke(inst.invoke("a", &[], 1000).unwrap());
+    let (id_b, out) = inst.spawn_continuation("b", &[]).unwrap();
+    assert_eq!(id_b, 1);
+    assert_suspended_invoke(out);
+    let fuel = inst.machine.remaining_fuel;
+    assert_completed(
+        inst.resume(1, vec![Value::i32(42, Label::Public)]).unwrap(),
+        42,
+    );
+    assert_eq!(inst.machine.remaining_fuel, fuel - 1);
+    assert_eq!(inst.machine.continuations.len(), 1);
+    assert_eq!(inst.machine.continuations[0].continuation_identifier, 0);
+    assert_completed(
+        inst.resume(0, vec![Value::i32(41, Label::Public)]).unwrap(),
+        41,
+    );
+    assert_eq!(inst.machine.remaining_fuel, fuel - 2);
+}
+
+#[test]
+fn continue_runs_lowest_ready_id() {
+    let src = r#"
+(module
+  (func (export "a") (result i32) (i32.const 1))
+  (func (export "b") (result i32) (i32.const 2)))
+"#;
+    let module = decode_text(src).unwrap();
+    let mut inst = Instance::instantiate(module).unwrap();
+    match inst.invoke("a", &[], 0).unwrap() {
+        ExecOutcome::Suspended {
+            reason: SuspendReason::OutOfFuel,
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    let (id_b, out) = inst.spawn_continuation("b", &[]).unwrap();
+    assert_eq!(id_b, 1);
+    match out {
+        ExecOutcome::Suspended {
+            reason: SuspendReason::OutOfFuel,
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(inst.machine.continuations.len(), 2);
+    inst.add_fuel(10);
+    assert_completed(inst.continue_run().unwrap(), 1);
+    assert_eq!(inst.machine.continuations.len(), 1);
+    assert_eq!(inst.machine.continuations[0].continuation_identifier, 1);
+    assert_completed(inst.continue_run().unwrap(), 2);
 }

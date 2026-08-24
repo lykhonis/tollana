@@ -1,5 +1,7 @@
 use crate::value::{CapHandle, Value};
 
+pub const MAX_CONTINUATIONS: usize = 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProgramCounter {
     pub function_index: u32,
@@ -141,7 +143,7 @@ pub struct MachineState {
     pub remaining_fuel: u64,
     pub quotas: Vec<QuotaSlot>,
     pub capability_table: Vec<CapabilityTableEntry>,
-    pub pending_host_call: Option<HostCall>,
+    pub pending_host_calls: Vec<HostCall>,
     pub active_continuation_identifier: Option<u32>,
     pub continuations: Vec<Continuation>,
 }
@@ -155,7 +157,7 @@ impl MachineState {
             remaining_fuel: 0,
             quotas: Vec::new(),
             capability_table: Vec::new(),
-            pending_host_call: None,
+            pending_host_calls: Vec::new(),
             active_continuation_identifier: None,
             continuations: Vec::new(),
         }
@@ -175,7 +177,7 @@ mod tests {
     #[test]
     fn empty_machine_has_no_pending_host_call() {
         let machine = MachineState::new();
-        assert!(machine.pending_host_call.is_none());
+        assert!(machine.pending_host_calls.is_empty());
         assert!(machine.continuations.is_empty());
         assert_eq!(machine.remaining_fuel, 0);
     }

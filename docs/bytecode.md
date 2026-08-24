@@ -66,7 +66,7 @@ This specification defines:
 - Fuel checked **before** each instruction; exhaustion is resumable `OutOfFuel`, not a trap.
 - An IR-level snapshot record that MUST round-trip core machine state (the on-disk AEAD container remains architecture-owned).
 
-Implementers MUST be able to write `MachineState`, the interpreter loop, and the seven conformance programs **without inventing opcode meanings**.
+Implementers MUST be able to write `MachineState`, the interpreter loop, and the conformance programs **without inventing opcode meanings**.
 
 ---
 
@@ -81,7 +81,7 @@ Pain points this v0 slice addresses:
 - Capability unforgeability and sensitivity labels MUST live in the value representation from v0, even if full attenuation lands later.
 - Tests need a hand-writable text format and a compact binary with fixed-width immediates.
 
-Version 0 is complete for the durability contract: integer arithmetic, bounds-checked memory, structured control, one live continuation, and one in-flight host call. It is not a language platform.
+Version 0 is complete for the durability contract: integer arithmetic, bounds-checked memory, structured control, host-driven sibling continuations, and in-flight host calls keyed by `continuationIdentifier`. It is not a language platform.
 
 ---
 
@@ -127,7 +127,7 @@ This is a **naming** convention. The binary is Tollana IR (`TIR\0`), not WASM. T
 - Define `MachineState`, `Continuation`, `Value`, fuel, trap vs suspend so an interpreter can be written from this document alone.
 - Define text and binary module encodings and a stack-typing validator specified in this document’s names.
 - Define `host.invoke` suspend/resume and the IR-level snapshot round-trip.
-- Provide seven conformance programs with expected traces.
+- Provide eight conformance programs with expected traces.
 - Keep opcode names in WASM text (`i32.add`, `host.invoke`).
 
 ### Non-Goals (this document and v0 ISA)
@@ -137,7 +137,7 @@ This is a **naming** convention. The binary is Tollana IR (`TIR\0`), not WASM. T
 - On-disk AEAD snapshot/journal container ([RFC 0001](architecture.md) §11, §13).
 - Goal trees, `code.run` child machines, AI gateway, language frontends, JIT.
 - `Float32` / `Float64`, SIMD, GC heap objects, `String` as a `ValueType`.
-- `MemoryGrow`, multiple memories, indirect call, tables, sibling continuations.
+- `MemoryGrow`, multiple memories, indirect call, tables.
 - Binary compatibility with WebAssembly.
 - A full information-flow type system (labels are carried; policy is host-side).
 
@@ -145,7 +145,7 @@ This is a **naming** convention. The binary is Tollana IR (`TIR\0`), not WASM. T
 
 ## Abstract Machine
 
-The interpreter executes one `Module` instance. v0 has **at most one live `Continuation`**. The type is still a named state object so later sibling continuations are extra instances, not a format break.
+The interpreter executes one `Module` instance. `MachineState.continuations` is a list of live fibers. Sequential guests use one continuation; true concurrency (`Promise.all`, `goal.all`) is extra `Continuation` instances created by the host. The core does not create fibers from guest opcodes.
 
 ### State objects
 
@@ -158,12 +158,12 @@ MachineState
 ├── remainingFuel                        u64
 ├── quotas[]                             QuotaSlot (instance-level; absent dimension = unlimited)
 ├── capabilityTable[]                    CapabilityTableEntry
-├── pendingHostCall                      optional HostCall
+├── pendingHostCalls[]                   HostCall, at most one per continuationIdentifier
 ├── activeContinuationIdentifier         optional u32
-└── continuations[]                      v0: length 0 or 1
+└── continuations[]                      unique continuationIdentifier values
 
 Continuation
-├── continuationIdentifier               u32 (v0: 0)
+├── continuationIdentifier               u32  ; unique in the instance; 0 is the first Invoke fiber, not reserved
 ├── valueStack[]                         Value (top = last)
 └── callFrames[]                         CallFrame (top = current)
 
@@ -227,8 +227,8 @@ flowchart TB
     FUEL[remainingFuel]
     QSLOTS[quotas[]]
     CAP[capabilityTable]
-    PHC["pendingHostCall — 0 or 1"]
-    subgraph C[Continuation — v0: one live]
+    PHC["pendingHostCalls — at most one per continuation"]
+    subgraph C[Continuation — N live]
       VS[valueStack of Value]
       CF[callFrames]
       CS[controlStack per CallFrame]
@@ -245,22 +245,26 @@ flowchart TB
 
 `Continue` (see [Instantiation and Invocation Interface](#instantiation-and-invocation-interface)) first applies the **entry checks** below, then repeatedly performs a **step** until `Completed`, `Suspended`, or `Trapped`.
 
+A continuation is **ready** when it is in `continuations[]`, has a non-empty `callFrames`, and has **no** `pendingHostCalls` entry with its `continuationIdentifier`.
+
 **`Continue` entry checks** (MUST run before any step; none of these is a guest `TrapKind`):
 
-1. If `pendingHostCall` is present, `Continue` MUST return host API error `HostCallPending` immediately. MUST NOT enter the step loop. The host MUST use `Resume` or `TrapPending` to clear the pending call.
-2. If there is no active continuation:
-   - If the instance has a last guest outcome of `Completed` or `Trapped`, `Continue` MUST return that same outcome again (idempotent replay) and MUST NOT execute.
-   - Else (never successfully `Invoke`d): MUST return host API error `InstanceIdle`.
+1. If the last guest outcome is `Trapped`, `Continue` MUST return that outcome again and MUST NOT execute.
+2. Select the ready continuation with the **lowest** `continuationIdentifier`. Set `activeContinuationIdentifier` to that id. If several are ready, MUST NOT prefer the previously active fiber over a lower id.
+3. If none is ready:
+   - If `pendingHostCalls` is non-empty, MUST return host API error `HostCallPending`. The host MUST `Resume` or `TrapPending` **by `continuationIdentifier`**.
+   - Else if the last guest outcome is `Completed`, MUST return that outcome again (idempotent replay) and MUST NOT execute.
+   - Else MUST return host API error `InstanceIdle`.
 
 On each **step**, the implementation MUST:
 
 1. Let `frame` be the top `CallFrame`. If `instructionIndex` is out of range of that function’s decoded stream, MUST trap `InvalidProgramCounter` (malformed execution; validated modules never reach this if `br` / `return` follow this spec).
-2. **Fuel check (before the instruction):** if `remainingFuel == 0`, MUST suspend with `SuspendReason.OutOfFuel` **without** executing and **without** advancing `instructionIndex`. MUST NOT set `pendingHostCall`. After `AddFuel`, the host MUST call `Continue` (not `Resume`). That `Continue` MUST re-attempt the **same** instruction, including a new fuel check.
-3. **Quota check (before the instruction, after the fuel check):** if the instruction is `host.invoke` and a `HostCallCount` slot is present with `remaining == 0`, MUST suspend with `SuspendReason.QuotaExhausted` for that dimension **without** executing, **without** charging fuel, and **without** advancing `instructionIndex`. MUST NOT set `pendingHostCall`. After `AddQuota`, the host MUST call `Continue` (not `Resume`).
+2. **Fuel check (before the instruction):** if `remainingFuel == 0`, MUST suspend with `SuspendReason.OutOfFuel` **without** executing and **without** advancing `instructionIndex`. MUST NOT append a `pendingHostCalls` entry. After `AddFuel`, the host MUST call `Continue` (not `Resume`). That `Continue` MUST re-attempt the **same** instruction, including a new fuel check.
+3. **Quota check (before the instruction, after the fuel check):** if the instruction is `host.invoke` and a `HostCallCount` slot is present with `remaining == 0`, MUST suspend with `SuspendReason.QuotaExhausted` for that dimension **without** executing, **without** charging fuel, and **without** advancing `instructionIndex`. MUST NOT append a `pendingHostCalls` entry. After `AddQuota`, the host MUST call `Continue` (not `Resume`).
 4. Subtract `1` from `remainingFuel` (decrement only when `remainingFuel >= 1`).
-5. Execute `instruction` per [Instruction Reference](#instruction-reference). A successful `host.invoke` that sets `pendingHostCall` MUST then decrement `HostCallCount.remaining` by 1 when that slot is present.
+5. Execute `instruction` per [Instruction Reference](#instruction-reference). A successful `host.invoke` that appends a `pendingHostCalls` entry MUST then decrement `HostCallCount.remaining` by 1 when that slot is present.
 
-**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `AddQuota`, `ConsumeQuota`, `SnapshotCore`, and `RestoreCore` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12). Quota slots are independent of fuel.
+**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `AddQuota`, `ConsumeQuota`, `SnapshotCore`, `RestoreCore`, and `SpawnContinuation` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12). Quota slots are independent of fuel. Sibling continuations share the instance `remainingFuel`.
 
 **Traps and `instructionIndex`:** a trap MUST leave `instructionIndex` at the instruction that was executing (the one that just consumed fuel, if any). Traps MUST NOT advance `instructionIndex` past that instruction. Operands already popped by that instruction are **not** pushed back.
 
@@ -286,6 +290,7 @@ Two layers. Changing a **hard** cap is an IR/module-format break. Changing an **
 | Value stack depth | 65536 `Value`s | `ValueStackOverflow` |
 | Call frame depth | 1024 | `CallStackOverflow` |
 | Control-stack depth per frame | 1024 | `ControlStackOverflow` |
+| Live continuations | 1024 | reject `SpawnContinuation` (host API error, not a guest trap) |
 | Host max pages | 16 (1 MiB) | reject instantiate if module `pageCount` > host max |
 
 `AddFuel` MUST **saturate** at `u64` maximum (MUST NOT wrap). A zero `amount` is allowed and is a no-op.
@@ -296,10 +301,10 @@ A **step burst** (run-until-yield) ends in exactly one of:
 
 | Outcome | Meaning |
 |---------|---------|
-| `Completed { results[] }` | Entry `return` / function `end` with empty call stack |
-| `Suspended { reason: host.invoke }` | `pendingHostCall` set; continuation captured |
-| `Suspended { reason: OutOfFuel }` | continuation captured at the unpaid instruction |
-| `Trapped { trapKind, programCounter }` | fatal; instance MUST NOT execute further except discard/inspect |
+| `Completed { results[] }` | The **active** continuation returned with an empty call stack and is removed from `continuations[]`. Sibling continuations, if any, remain. The step burst ends; the host MUST `Continue` to run another ready fiber. |
+| `Suspended { reason: host.invoke }` | a `pendingHostCalls` entry is set for the active continuation |
+| `Suspended { reason: OutOfFuel }` | the active continuation is captured at the unpaid instruction; siblings remain |
+| `Trapped { trapKind, programCounter }` | fatal for the **instance**; MUST NOT execute further except discard/inspect |
 
 ---
 
@@ -836,7 +841,7 @@ The implicit function label is always `controlStack[0]` of that frame (deepest /
 - Pop `resultCount` values of the **current function** type.
 - Discard every remaining `ControlLabel` on this frame (nested `block` / `loop` / `if`).
 - Pop the `CallFrame`.
-- If no frames remain: clear `activeContinuationIdentifier`; instance **completes** with those results.
+- If no frames remain: remove this continuation from `continuations[]`; clear `activeContinuationIdentifier` if it named this fiber; **this continuation completes** with those results. Sibling continuations MUST remain.
 - Else: push results onto the caller’s value stack; the caller’s `instructionIndex` is already `returnProgramCounter`. The next `Continue` step executes that instruction.
 
 Function-closing `end` MUST behave as `return` after popping the function label.
@@ -849,7 +854,7 @@ Function-closing `end` MUST behave as `return` after popping the function label.
 - Look up `pluginId`, `methodId`, and the import function type.
 - Stack effect: same as calling that type (pop params rightmost first; results are **not** pushed now).
 - Fuel: 1 for this opcode; host work is not IR fuel.
-- Traps (before suspend): `HostTypeMismatch` on argument tags (not `TypeMismatch`), `ValueStackUnderflow`, `InvalidCapability`, `HostNotFound`. On any of these: operands already popped are **not** restored; `instructionIndex` stays on this instruction; `pendingHostCall` MUST NOT be set.
+- Traps (before suspend): `HostTypeMismatch` on argument tags (not `TypeMismatch`), `ValueStackUnderflow`, `InvalidCapability`, `HostNotFound`. On any of these: operands already popped are **not** restored; `instructionIndex` stays on this instruction; a `pendingHostCalls` entry MUST NOT be appended.
 - Then follow [host.invoke Protocol](#invokehostplugin-protocol). MUST NOT run the host inside the interpreter.
 
 If any parameter is `Capability`, the handle MUST be validated live before suspend; invalid MUST trap `InvalidCapability` and MUST NOT yield `HostCall`.
@@ -874,16 +879,16 @@ sequenceDiagram
   Guest->>Guest: Validate Capability handles
   Guest->>Cont: Advance instructionIndex past host.invoke
   Guest->>Cont: Suspend (do not push results)
-  Guest->>State: pendingHostCall = HostCall
+  Guest->>State: append pendingHostCalls HostCall
   Guest->>Host: yield Suspended host.invoke
   Note over Host: Plugin runs asynchronously (not IR fuel)
   alt Success
-    Host->>Guest: Resume(results matching import type)
-    Guest->>State: clear pendingHostCall
-    Guest->>Cont: Push result Value(s); continue at next Instruction
+    Host->>Guest: Resume(continuationIdentifier, results)
+    Guest->>State: remove that pendingHostCalls entry
+    Guest->>Cont: Push result Value(s); Continue (lowest-ready-id)
   else Plugin or policy failure
-    Host->>Guest: Trap(trapKind)
-    Guest->>State: clear pendingHostCall; instance trapped
+    Host->>Guest: TrapPending(continuationIdentifier, trapKind)
+    Guest->>State: remove that pendingHostCalls entry; instance trapped
   end
 ```
 
@@ -895,7 +900,7 @@ Normative steps when executing `host.invoke`:
 4. Resolve `(pluginId, methodId)` in the instance plugin map. On failure, trap `HostNotFound`.
 5. Set the current frame `instructionIndex` to the instruction **after** `host.invoke`.
 6. Suspend the current `Continuation` (it remains in `MachineState.continuations`).
-7. Set `pendingHostCall` to:
+7. Append to `pendingHostCalls` (MUST NOT already contain this `continuationIdentifier`):
 
 ```text
 HostCall {
@@ -903,7 +908,7 @@ HostCall {
   methodId,
   arguments,                 // full Values including labels
   capabilities,              // handles only
-  continuationIdentifier     // v0: 0
+  continuationIdentifier     // the active continuation
 }
 ```
 
@@ -918,19 +923,19 @@ The host MUST eventually:
 
 On resume:
 
-1. `pendingHostCall` MUST be present and the last suspend reason MUST be `host.invoke`; else `Resume` MUST return a host API error (not a guest trap). `Resume` MUST NOT be used after `OutOfFuel`.
-2. Clear `pendingHostCall`. MUST NOT decrement `remainingFuel`.
+1. `Resume(continuationIdentifier, results)`: a `pendingHostCalls` entry with that identifier MUST be present; else `Resume` MUST return a host API error (not a guest trap). `Resume` MUST NOT be used in place of `Continue` after `OutOfFuel` or `QuotaExhausted`.
+2. Remove that pending entry. MUST NOT decrement `remainingFuel`. MUST NOT remove other pending calls.
 3. For each result `Value`: tag MUST match the import type (`HostTypeMismatch` if not). `Capability` results MUST be installed in `capabilityTable` (host may pass an existing live handle or a newly allocated `(tableIndex, generation)`).
-4. Push results (left-to-right, last result on top).
-5. Call `Continue` at the already-advanced `instructionIndex`.
+4. Set `activeContinuationIdentifier` to that identifier and push results onto **that** continuation’s value stack (left-to-right, last result on top).
+5. Call `Continue` (lowest-ready-id rule; MAY run a different ready fiber than the one just resumed).
 
 Zero-result imports: push nothing. A result type of `unit` requires pushing a `unit` value.
 
-`TrapPending` MUST require `pendingHostCall`, clear it, MUST NOT decrement fuel, and MUST mark the instance `Trapped`.
+`TrapPending(continuationIdentifier, trapKind)` MUST require a pending call with that identifier, clear that entry, MUST NOT decrement fuel, and MUST mark the **instance** `Trapped`.
 
 ### Snapshot mid-await
 
-A snapshot taken after step 7 MUST include the suspended `Continuation` (stacks, frames, `instructionIndex` **after** the invoke) **and** the `HostCall`. Restore on a fresh machine MUST restore both. The host MUST also restore plugin identity hashes and implementations (not IR-specified bytes). After restore, resume is identical to a no-migrate resume.
+A snapshot taken after step 7 MUST include every live `Continuation` and every `pendingHostCalls` entry. Restore on a fresh machine MUST restore both. The host MUST also restore plugin identity hashes and implementations (not IR-specified bytes). After restore, resume is identical to a no-migrate resume.
 
 ### Worked example (Echo)
 
@@ -960,7 +965,7 @@ After the invoke suspends:
 - `remainingFuel` decreased by 2 from the run start (push + invoke), if started with enough fuel.
 - `valueStack` empty.
 - `CallFrame`: `functionIndex = 0`, `instructionIndex = 2`, locals empty, control stack = implicit function label only.
-- `pendingHostCall`:
+- `pendingHostCalls` (one entry):
 
 ```text
 pluginId: 0
@@ -1322,7 +1327,7 @@ RFC 0001 owns the on-disk AEAD/checksum **container** ([RFC 0001](architecture.m
 - `remainingFuel`.
 - `quotas[]`: zero or more `{dimension, remaining}` slots, unique dimension codes, strictly increasing `dimension` in the canonical encoding ([RFC 0001](architecture.md) §12).
 - `capabilityTable` (`tableIndex`, `generation`, `live`; host-side identity opaque to IR but MUST be carried as opaque bytes so the host can rebind).
-- At most one `HostCall` (all fields).
+- Every `pendingHostCalls` entry (`HostCall` fields). At most one per `continuationIdentifier`. Each identifier MUST name a live continuation.
 - `Label` on **every** `Value`.
 
 ### Host MUST restore too (not specified as IR bytes)
@@ -1366,7 +1371,7 @@ for each entry:
   opaqueBytes:            that many bytes
 activeContinuationPresent: u8   ; 0 or 1
 if 1: activeContinuationIdentifier: u32
-continuationCount:        u32   ; 0 or 1 in v0
+continuationCount:        u32
 for each continuation:
   continuationIdentifier: u32
   valueStackCount:        u32
@@ -1378,8 +1383,8 @@ for each continuation:
     controlLabelCount + labels (each ControlLabel encoding below)
     returnProgramCounterPresent: u8
     if 1: functionIndex, instructionIndex
-pendingHostCallPresent:   u8
-if 1:
+pendingHostCallCount:     u32
+for each pending HostCall:
   pluginId, methodId: u32
   argumentCount + arguments: Value*
   capabilityCount: u32
@@ -1387,7 +1392,7 @@ if 1:
   continuationIdentifier: u32
 ```
 
-If `activeContinuationPresent = 1`, `activeContinuationIdentifier` MUST equal one `continuationIdentifier` in the list. v0: that identifier is `0`.
+If `activeContinuationPresent = 1`, `activeContinuationIdentifier` MUST equal one `continuationIdentifier` in the list. Identifiers in `continuations[]` MUST be unique. Each `pendingHostCalls` `continuationIdentifier` MUST name a live continuation and MUST be unique among pending entries. `continuationCount` MUST NOT exceed the live-continuation cap.
 
 **`Value` encoding:**
 
@@ -1456,7 +1461,7 @@ E6 03 00 00 00 00 00 00                         ; remainingFuel 998
 00 00 00 00                                     ; stackHeight 0
 02 00 00 00                                     ; branchInstructionIndex 2 (End)
 00                                              ; returnProgramCounterPresent 0
-01                                              ; pendingHostCallPresent
+01 00 00 00                                     ; pendingHostCallCount 1
 00 00 00 00                                     ; pluginId 0
 00 00 00 00                                     ; methodId 0
 01 00 00 00                                     ; argumentCount 1
@@ -1490,13 +1495,21 @@ Invoke(
 
 Continue(instance) -> Completed | Suspended | Trapped | HostInterfaceError
   // Run the interpreter loop after entry checks. MUST be used after AddFuel.
-  // If pendingHostCall is set: MUST return HostCallPending (not a guest trap).
-  // If never invoked: MUST return InstanceIdle. If already Completed/Trapped: replay that outcome.
+  // Selects the ready continuation with the lowest continuationIdentifier.
+  // If none is ready and pendingHostCalls is non-empty: MUST return HostCallPending
+  // (not a guest trap). If never invoked: MUST return InstanceIdle.
+  // If already Trapped: replay that outcome. If already Completed and no ready
+  // fiber remains: replay Completed.
 
-Resume(instance, results: Value[]) -> Completed | Suspended | Trapped
-  // ONLY for SuspendReason.host.invoke. MUST NOT be used for OutOfFuel or QuotaExhausted.
+Resume(instance, continuationIdentifier, results: Value[]) -> Completed | Suspended | Trapped
+  // ONLY for a pendingHostCalls entry with that identifier.
+  // MUST NOT be used in place of Continue after OutOfFuel or QuotaExhausted.
 
-TrapPending(instance, trapKind) -> Trapped
+TrapPending(instance, continuationIdentifier, trapKind) -> Trapped
+SpawnContinuation(instance, exportName, arguments: Value[])
+  -> (continuationIdentifier, Completed | Suspended | Trapped) | Reject
+  // Host-driven extra fiber. MUST NOT take initialFuel. MUST NOT assign or reset
+  // remainingFuel. MUST NOT add a guest opcode. Then Continue (lowest-ready-id).
 AddFuel(instance, amount: u64) -> ()   // saturating; MUST NOT run the guest
 AddQuota(instance, dimension, amount: u64) -> ()  // saturating; inserts the slot if absent; MUST NOT run the guest
 ConsumeQuota(instance, dimension, amount: u64) -> ok | insufficient  // no-op success if dimension absent
@@ -1511,27 +1524,42 @@ RestoreCore(snapshot: CoreSnapshot, hostRebind) -> Instance | Reject
 3. Check `pluginMap`: every `HostImport` pair is present with matching arity/types; map keys equal the encoded `pluginId`s (no re-numbering).
 4. Allocate `linearMemory` of `pageCount × 65536` bytes, **all zeros**. If `memoryCount = 0`, length 0.
 5. Evaluate globals in order: `ConstantExpression` into `globals[i]`; `HostInjected` from `hostInjectedGlobals` in HostInjected order. `ValueType` MUST match. Injected `Capability` values MUST be installed in `capabilityTable` as live entries.
-6. `continuations = []`, `activeContinuationIdentifier` absent, `pendingHostCall` absent, `remainingFuel = 0`.
+6. `continuations = []`, `activeContinuationIdentifier` absent, `pendingHostCalls = []`, `remainingFuel = 0`.
 7. Install `quotas`. Duplicate or reserved/unknown `dimension` MUST reject. Sort slots by `dimension` ascending. If `MemoryBytes` is present, `remaining` MUST be ≥ allocated `linearMemory` length; then subtract that length from `remaining`.
 8. Return the instance. MUST NOT execute guest instructions.
 
 ### `Invoke` sequence (normative)
 
-1. Resolve `exportName` to a function. Fail if missing or not a function.
-2. Argument count and each `ValueType` MUST match the function type; else reject (host error, not `TrapKind` of a running guest).
-3. Install any `Capability` arguments as live table entries if not already present (same handle is reused).
-4. Set `remainingFuel = initialFuel`.
-5. Create `Continuation` identifier `0`; set `activeContinuationIdentifier = 0`.
-6. `EnterFrame` for that function: locals = arguments then zero/null extras; implicit function `ControlLabel` as specified under Control; `returnProgramCounter` absent.
-7. Call `Continue` and return its outcome.
+1. Reject if the last guest outcome is `Trapped`.
+2. If `continuations` is non-empty or `pendingHostCalls` is non-empty, reject. Additional fibers use `SpawnContinuation`.
+3. Resolve `exportName` to a function. Fail if missing or not a function.
+4. Argument count and each `ValueType` MUST match the function type; else reject (host error, not `TrapKind` of a running guest).
+5. Install any `Capability` arguments as live table entries if not already present (same handle is reused).
+6. Set `remainingFuel = initialFuel`.
+7. Create `Continuation` identifier `0`; set `activeContinuationIdentifier = 0`.
+8. `EnterFrame` for that function: locals = arguments then zero/null extras; implicit function `ControlLabel` as specified under Control; `returnProgramCounter` absent.
+9. Call `Continue` and return its outcome.
+
+### `SpawnContinuation` sequence (normative)
+
+1. Reject if the last guest outcome is `Trapped`.
+2. Resolve `exportName` to a function. Fail if missing or not a function.
+3. Argument count and each `ValueType` MUST match the function type; else reject.
+4. Install any `Capability` arguments as live table entries if not already present.
+5. If `continuations.length` would exceed the live-continuation cap, reject.
+6. Allocate the lowest `u32` identifier not currently in `continuations[]`. Identifier `0` is the first `Invoke` fiber and is not otherwise reserved.
+7. MUST NOT assign or reset `remainingFuel`. MUST NOT modify other continuations or `pendingHostCalls`.
+8. Append a `Continuation` with that identifier, empty value stack, and empty call frames. Set `activeContinuationIdentifier` to it.
+9. `EnterFrame` for the export as in `Invoke`.
+10. Call `Continue` and return `(continuationIdentifier, outcome)`. `Continue` uses the lowest-ready-id rule and MAY run a different ready fiber than the one just spawned.
 
 ### `Continue`
 
-MUST apply the **entry checks** then the step loop in [interpreter loop](#interpreter-loop-normative). MUST NOT decrement fuel except as specified per executed instruction. After `OutOfFuel`, the host MUST `AddFuel` then `Continue`. After `QuotaExhausted`, the host MUST `AddQuota` then `Continue`. After `host.invoke`, the host MUST `Resume` or `TrapPending`. `Continue` while `pendingHostCall` is set MUST return `HostCallPending` immediately (MUST NOT livelock in no-op steps).
+MUST apply the **entry checks** then the step loop in [interpreter loop](#interpreter-loop-normative). MUST NOT decrement fuel except as specified per executed instruction. After `OutOfFuel`, the host MUST `AddFuel` then `Continue`. After `QuotaExhausted`, the host MUST `AddQuota` then `Continue`. After `host.invoke`, the host MUST `Resume` or `TrapPending` **by `continuationIdentifier`**. `Continue` when no continuation is ready and `pendingHostCalls` is non-empty MUST return `HostCallPending` immediately (MUST NOT livelock in no-op steps). `Continue` when another fiber is ready MUST run that fiber even if other fibers have pending host calls.
 
-`HostInterfaceError` names: `HostCallPending`, `InstanceIdle`, plus `Resume`/`TrapPending` used without a matching `pendingHostCall`. These are **not** `TrapKind` values.
+`HostInterfaceError` names: `HostCallPending`, `InstanceIdle`, plus `Resume`/`TrapPending` used without a matching `pendingHostCalls` entry. These are **not** `TrapKind` values.
 
-`Resume` pushes results then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` / `AddQuota` / `ConsumeQuota` MUST NOT decrement `remainingFuel`.
+`Resume` pushes results onto the named continuation then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` / `AddQuota` / `ConsumeQuota` / `SpawnContinuation` MUST NOT decrement `remainingFuel`.
 
 ---
 
@@ -1561,7 +1589,7 @@ Decoded: `instructionIndex` 0 push 1, 1 push 2, 2 `i32.add`, 3 `end`.
 | add | 997 | (0, 3) | `[i32(3, Public)]` |
 | `end` / `return` | 996 | completed | results `[i32(3, Public)]` |
 
-**Expected:** `Completed { results: [i32(3, Public)] }`. No `pendingHostCall`. No trap.
+**Expected:** `Completed { results: [i32(3, Public)] }`. No `pendingHostCalls` entry. No trap.
 
 ---
 
@@ -1600,7 +1628,7 @@ Host Echo MUST return `i32(41, Public)` (identity).
 2. Push 41 → fuel 999, PC (0,1), stack `[i32(41, Public)]`.
 3. `host.invoke` → fuel 998, stack `[]`, PC (0,2), `Suspended host.invoke`.
 4. `HostCall` as in the Echo worked example (`arguments` 41).
-5. `Resume(i32(41, Public))` (fuel stays 998) then `Continue` → stack `[i32(41, Public)]`, PC still (0,2).
+5. `Resume(0, i32(41, Public))` (fuel stays 998) then `Continue` → stack `[i32(41, Public)]`, PC still (0,2).
 6. Push 1 → fuel 997, stack `[i32(41, Public), i32(1, Public)]`.
 7. Add → fuel 996, stack `[i32(42, Public)]`.
 8. End → fuel 995, `Completed { [i32(42, Public)] }`.
@@ -1625,12 +1653,12 @@ Procedure:
    - `instructionIndex == 2`, `functionIndex == 0`
    - `valueStack` empty
    - implicit function `ControlLabel` present (`labelKind = block`, `resultCount = 1`, `stackHeight = 0`)
-   - `pendingHostCall` equal to program 2
+   - `pendingHostCalls` equal to program 2 (one entry, `continuationIdentifier` 0)
    - `memoryByteLength == 0`
    - `capabilityTable` empty
    - one `Continuation` identifier 0
    - every `Value` label preserved
-6. `Resume(i32(41, Public))` (still fuel 998) and finish as program 2 steps 5–8.
+6. `Resume(0, i32(41, Public))` (still fuel 998) and finish as program 2 steps 5–8.
 
 **Expected:** same `Completed { [i32(42, Public)] }`. Fuel after complete: 995.
 
@@ -1690,7 +1718,7 @@ Memory at bytes `[0..4)` after store: `04 03 02 01`. Load yields `i32(0x01020304
 
 `immediateOffset` 0. `effectiveAddress = 65535`, `accessSize = 4`, `65535+4 > 65536`.
 
-**Expected:** `Trapped { trapKind: OutOfBoundsMemory, programCounter: (0, 1) }` after charging fuel for the load (push then load: fuel 998 if started at 1000). `instructionIndex` remains `1` (the load); traps MUST NOT advance it. MUST NOT set `pendingHostCall`. MUST NOT use `SuspendReason`.
+**Expected:** `Trapped { trapKind: OutOfBoundsMemory, programCounter: (0, 1) }` after charging fuel for the load (push then load: fuel 998 if started at 1000). `instructionIndex` remains `1` (the load); traps MUST NOT advance it. MUST NOT append a `pendingHostCalls` entry. MUST NOT use `SuspendReason`.
 
 Address `65536` likewise traps. Address `0` with `immediateOffset` `65533` and `i32.load` traps (`65533+4 > 65536`).
 
@@ -1754,9 +1782,37 @@ Host resume `i32(7, Public)` → `Completed { [i32(7, Public)] }`.
 
 This module MUST be **rejected at validation** (`i32` vs `Capability`). Implementations MUST NOT coerce `1` into `{ tableIndex: 1, generation: 0 }` or any handle.
 
-A second negative (runtime): valid module that `local.get` of an uninitialized `Capability` local (null) and invokes MUST trap `InvalidCapability` at the invoke, not suspend. `instructionIndex` remains on `host.invoke`; the null handle has been popped; `pendingHostCall` is absent.
+A second negative (runtime): valid module that `local.get` of an uninitialized `Capability` local (null) and invokes MUST trap `InvalidCapability` at the invoke, not suspend. `instructionIndex` remains on `host.invoke`; the null handle has been popped; `pendingHostCalls` is empty.
 
 A third negative: take a valid snapshot that contains handle `{tableIndex: 1, generation: 1}` and a matching live table entry. `RestoreCore` with a table whose slot is `{1, 2}` (or not live) **MUST reject** the restore (capability mismatch, fail-fast). It MUST NOT return an instance that later traps on use. A correct restore keeps `generation` 1 and `live`.
+
+---
+
+### Program 8 — Sibling continuations
+
+**Purpose:** two live fibers, two in-flight `HostCall`s, shared `remainingFuel`, snapshot/restore, resume by `continuationIdentifier`.
+
+```text
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "a") (result i32)
+    (host.invoke Echo (i32.const 1)))
+  (func (export "b") (result i32)
+    (host.invoke Echo (i32.const 2))))
+```
+
+Procedure:
+
+1. `Invoke("a", [], initialFuel = 1000)` until `Suspended { host.invoke }`. Continuation `0` pending. `remainingFuel == 998`.
+2. `SpawnContinuation("b", [])`. MUST NOT reset `remainingFuel`. Continuation `1` runs under the lowest-ready-id rule (0 is not ready) until it suspends. `remainingFuel == 996`. `continuationCount == 2`. Two `pendingHostCalls` entries, identifiers `0` and `1`.
+3. `SnapshotCore` / `RestoreCore`. Both continuations and both pending calls MUST round-trip. Fuel MUST still be 996.
+4. `Resume(0, i32(41, Public))` then `Resume(1, i32(42, Public))` (or reverse). Each completed fiber is removed; the other remains until resumed. `SpawnContinuation` / snapshot / restore MUST NOT decrement fuel. After both complete, `remainingFuel == 994`.
+
+`Invoke` while either fiber is live MUST reject. `Continue` while both calls are pending MUST return `HostCallPending`. `Continue` after one fiber completes and the other is still pending MUST return `HostCallPending`.
 
 ---
 
@@ -1805,7 +1861,6 @@ Not in v0; listed so encodings do not paint the ISA into a corner:
 | Indirect call + tables | `CallIndirect`, function tables; new section |
 | `Float32` / `Float64` | new `ValueType` codes `0x05`/`0x06`, new opcodes in `0x80+` |
 | `MemoryGrow` | opcode, max pages distinct from min |
-| Sibling continuations | extra `Continuation` instances; same snapshot list |
 | Memory-region labels | loads join region label; not `Public`-always |
 | SIMD / v128 | deferred |
 | Multiple memories | extra immediate `memoryIndex` |

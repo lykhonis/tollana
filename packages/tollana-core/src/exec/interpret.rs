@@ -9,16 +9,22 @@ use crate::value::{Label, Value};
 
 impl Instance {
     pub fn continue_run(&mut self) -> Result<ExecOutcome, HostInterfaceError> {
-        if self.machine.pending_host_call.is_some() {
-            return Err(HostInterfaceError::HostCallPending);
+        if matches!(self.last_outcome, Some(ExecOutcome::Trapped { .. })) {
+            return Ok(self.last_outcome.clone().unwrap());
         }
-        if self.machine.active_continuation_identifier.is_none() {
-            return match &self.last_outcome {
-                Some(ExecOutcome::Completed { .. }) | Some(ExecOutcome::Trapped { .. }) => {
-                    Ok(self.last_outcome.clone().unwrap())
+        match self.lowest_ready_id() {
+            Some(id) => {
+                self.machine.active_continuation_identifier = Some(id);
+            }
+            None => {
+                if !self.machine.pending_host_calls.is_empty() {
+                    return Err(HostInterfaceError::HostCallPending);
                 }
-                _ => Err(HostInterfaceError::InstanceIdle),
-            };
+                return match &self.last_outcome {
+                    Some(ExecOutcome::Completed { .. }) => Ok(self.last_outcome.clone().unwrap()),
+                    _ => Err(HostInterfaceError::InstanceIdle),
+                };
+            }
         }
         loop {
             match self.step() {
@@ -44,10 +50,12 @@ impl Instance {
             },
             Label::Public,
         );
-        ExecOutcome::Trapped {
+        let outcome = ExecOutcome::Trapped {
             trap_kind: kind,
             program_counter: pc,
-        }
+        };
+        self.last_outcome = Some(outcome.clone());
+        outcome
     }
 
     pub(crate) fn pc(&self) -> ProgramCounter {
@@ -59,11 +67,43 @@ impl Instance {
     }
 
     pub(crate) fn continuation(&self) -> &Continuation {
-        &self.machine.continuations[0]
+        let idx = self.active_index();
+        &self.machine.continuations[idx]
     }
 
     pub(crate) fn continuation_mut(&mut self) -> &mut Continuation {
-        &mut self.machine.continuations[0]
+        let idx = self.active_index();
+        &mut self.machine.continuations[idx]
+    }
+
+    pub(crate) fn active_index(&self) -> usize {
+        let id = self
+            .machine
+            .active_continuation_identifier
+            .expect("active continuation");
+        self.machine
+            .continuations
+            .iter()
+            .position(|c| c.continuation_identifier == id)
+            .expect("active continuation present")
+    }
+
+    pub(crate) fn lowest_ready_id(&self) -> Option<u32> {
+        self.machine
+            .continuations
+            .iter()
+            .filter(|c| self.is_ready(c))
+            .map(|c| c.continuation_identifier)
+            .min()
+    }
+
+    pub(crate) fn is_ready(&self, continuation: &Continuation) -> bool {
+        !continuation.call_frames.is_empty()
+            && !self
+                .machine
+                .pending_host_calls
+                .iter()
+                .any(|c| c.continuation_identifier == continuation.continuation_identifier)
     }
 
     pub(crate) fn frame(&self) -> &CallFrame {
@@ -173,8 +213,11 @@ impl Instance {
                 reason: SuspendReason::HostInvoke,
             }),
             Ok(ExecAction::Complete(results)) => {
+                let id = self.machine.active_continuation_identifier;
+                self.machine
+                    .continuations
+                    .retain(|c| Some(c.continuation_identifier) != id);
                 self.machine.active_continuation_identifier = None;
-                self.machine.continuations.clear();
                 let sensitivity = join_labels(&results);
                 let journal_results: Vec<JournalValue> = results
                     .iter()
