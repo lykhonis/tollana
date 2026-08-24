@@ -1,0 +1,20 @@
+{
+  "name": "clock",
+  "version": "1.0.0",
+  "methods": [
+    {
+      "id": 0,
+      "name": "now_wall",
+      "params": [],
+      "results": ["i64"],
+      "capabilities": ["clock.read"]
+    },
+    {
+      "id": 1,
+      "name": "now_monotonic",
+      "params": [],
+      "results": ["i64"],
+      "capabilities": ["clock.read"]
+    }
+  ]
+}

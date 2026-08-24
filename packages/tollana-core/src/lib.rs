@@ -13,7 +13,9 @@ pub use container::{
     decode_container, encode_container, encode_container_aead, ContainerBody, DecodedContainer,
     PluginStateEntry,
 };
-pub use decode::{decode, decode_binary, decode_text, encode_binary, DecodeError, Module};
+pub use decode::{
+    decode, decode_binary, decode_text, encode_binary, DecodeError, FunctionType, Module,
+};
 pub use exec::{ExecOutcome, HostInterfaceError, Instance, PluginBinding, RestoreResult};
 pub use identity::{
     assign_local_ids, encode_plugin_identity, hash_canonical_bytes, hash_plugin_identity,

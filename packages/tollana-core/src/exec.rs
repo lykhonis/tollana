@@ -209,6 +209,10 @@ impl Instance {
         Ok(inst)
     }
 
+    pub fn plugin_identities(&self) -> &[PluginIdentity] {
+        &self.plugin_identities
+    }
+
     pub fn invoke(
         &mut self,
         export_name: &str,
