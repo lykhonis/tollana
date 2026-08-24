@@ -508,6 +508,8 @@ Root continuation
 
 Snapshots capture the entire live tree (all live continuations + pending host calls). Cancellation is hierarchical. Capability attenuation is hierarchical as well.
 
+v0 representation: `goal` is an **equal package** (well-known **name** only; no reserved `pluginId`). It creates sibling fibers with `SpawnContinuation` and removes them with `CancelContinuation` ([RFC 0002](bytecode.md)). The core has no goal opcodes. The package owns parent/child ids, join, and cancel. The host enforces the railguard table on spawn. Per-subtree quota remaining and attenuated capability sets live in the package’s opaque snapshot blob; TIRS still holds the fibers and pending calls.
+
 ---
 
 ## 10. AI Gateway and Context
@@ -757,6 +759,11 @@ body:         event-specific fields (in-process; not a file layout)
 |--------------|------|----------------|
 | `SnapshotTaken` | byte `snapshot` / `snapshot_aead` after TIRS is encoded | `journalCursor` written into the container |
 | `SnapshotRestored` | byte `restore` after `RestoreCore` | `journalCursor` read from the container |
+| `GoalSpawned` | `goal` package accepted a child spawn | `goal_id`, optional `parent_goal_id`, `continuation_id`, `depth` |
+| `GoalCompleted` | a spawned goal’s continuation returned | `goal_id` |
+| `GoalCancelled` | host cancelled a goal (and MAY cancel descendants) | `goal_id` |
+| `GoalDenied` | railguard or quota rejected spawn | reason (`max_depth`, `max_concurrent`, `max_children`, `approval`, `concurrent_goals_quota`, …) |
+| `CapabilityAttenuated` | child capability set is a subset of the parent’s | `continuation_id`, allowed-handle count |
 
 A byte-level `snapshot` / `restore` MUST emit `SnapshotCoreTaken` / `SnapshotCoreRestored` because it calls `SnapshotCore` / `RestoreCore`.
 

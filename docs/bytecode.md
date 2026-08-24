@@ -264,7 +264,7 @@ On each **step**, the implementation MUST:
 4. Subtract `1` from `remainingFuel` (decrement only when `remainingFuel >= 1`).
 5. Execute `instruction` per [Instruction Reference](#instruction-reference). A successful `host.invoke` that appends a `pendingHostCalls` entry MUST then decrement `HostCallCount.remaining` by 1 when that slot is present.
 
-**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `AddQuota`, `ConsumeQuota`, `SnapshotCore`, `RestoreCore`, and `SpawnContinuation` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12). Quota slots are independent of fuel. Sibling continuations share the instance `remainingFuel`.
+**Fuel cost:** every executed `Instruction`, including `nop`, `end`, `else`, and `host.invoke`, costs **1**. `Resume`, `TrapPending`, `AddFuel`, `AddQuota`, `ConsumeQuota`, `SnapshotCore`, `RestoreCore`, `SpawnContinuation`, and `CancelContinuation` MUST NOT decrement `remainingFuel`. Host-side plugin work is **not** IR fuel ([RFC 0001](architecture.md) §12). Quota slots are independent of fuel. Sibling continuations share the instance `remainingFuel`.
 
 **Traps and `instructionIndex`:** a trap MUST leave `instructionIndex` at the instruction that was executing (the one that just consumed fuel, if any). Traps MUST NOT advance `instructionIndex` past that instruction. Operands already popped by that instruction are **not** pushed back.
 
@@ -1510,6 +1510,10 @@ SpawnContinuation(instance, exportName, arguments: Value[])
   -> (continuationIdentifier, Completed | Suspended | Trapped) | Reject
   // Host-driven extra fiber. MUST NOT take initialFuel. MUST NOT assign or reset
   // remainingFuel. MUST NOT add a guest opcode. Then Continue (lowest-ready-id).
+CancelContinuation(instance, continuationIdentifier) -> () | Reject
+  // Remove that continuation and its pendingHostCalls entry if any. MUST NOT
+  // trap the instance. MUST NOT decrement remainingFuel. MUST NOT remove siblings.
+  // Missing identifier is a host API error.
 AddFuel(instance, amount: u64) -> ()   // saturating; MUST NOT run the guest
 AddQuota(instance, dimension, amount: u64) -> ()  // saturating; inserts the slot if absent; MUST NOT run the guest
 ConsumeQuota(instance, dimension, amount: u64) -> ok | insufficient  // no-op success if dimension absent
@@ -1553,13 +1557,23 @@ RestoreCore(snapshot: CoreSnapshot, hostRebind) -> Instance | Reject
 9. `EnterFrame` for the export as in `Invoke`.
 10. Call `Continue` and return `(continuationIdentifier, outcome)`. `Continue` uses the lowest-ready-id rule and MAY run a different ready fiber than the one just spawned.
 
+### `CancelContinuation` sequence (normative)
+
+1. Reject if the last guest outcome is `Trapped`.
+2. If no live continuation has `continuationIdentifier`, reject.
+3. Remove that continuation from `continuations[]`. Remove any `pendingHostCalls` entry with that identifier. MUST NOT remove other fibers or pending calls.
+4. If `activeContinuationIdentifier` named that fiber, clear it.
+5. MUST NOT assign or reset `remainingFuel`. MUST NOT mark the instance `Trapped`.
+
+Hierarchical cancel (goal trees) is host policy: the host MAY invoke `CancelContinuation` for each descendant. The core does not walk a goal tree.
+
 ### `Continue`
 
 MUST apply the **entry checks** then the step loop in [interpreter loop](#interpreter-loop-normative). MUST NOT decrement fuel except as specified per executed instruction. After `OutOfFuel`, the host MUST `AddFuel` then `Continue`. After `QuotaExhausted`, the host MUST `AddQuota` then `Continue`. After `host.invoke`, the host MUST `Resume` or `TrapPending` **by `continuationIdentifier`**. `Continue` when no continuation is ready and `pendingHostCalls` is non-empty MUST return `HostCallPending` immediately (MUST NOT livelock in no-op steps). `Continue` when another fiber is ready MUST run that fiber even if other fibers have pending host calls.
 
 `HostInterfaceError` names: `HostCallPending`, `InstanceIdle`, plus `Resume`/`TrapPending` used without a matching `pendingHostCalls` entry. These are **not** `TrapKind` values.
 
-`Resume` pushes results onto the named continuation then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` / `AddQuota` / `ConsumeQuota` / `SpawnContinuation` MUST NOT decrement `remainingFuel`.
+`Resume` pushes results onto the named continuation then MUST call `Continue`. `Resume` / `TrapPending` / `AddFuel` / `AddQuota` / `ConsumeQuota` / `SpawnContinuation` / `CancelContinuation` MUST NOT decrement `remainingFuel`.
 
 ---
 

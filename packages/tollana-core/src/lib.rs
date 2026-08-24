@@ -14,7 +14,8 @@ pub use container::{
     PluginStateEntry,
 };
 pub use decode::{
-    decode, decode_binary, decode_text, encode_binary, DecodeError, FunctionType, Module,
+    decode, decode_binary, decode_text, encode_binary, DecodeError, ExportKind, FunctionType,
+    Module,
 };
 pub use exec::{ExecOutcome, HostInterfaceError, Instance, PluginBinding, RestoreResult};
 pub use identity::{

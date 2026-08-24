@@ -1,14 +1,15 @@
 use crate::error::HostError;
-use crate::plugin::{Plugin, PluginResult};
+use crate::plugin::{Plugin, PluginContext, PluginResult};
 use std::collections::HashMap;
 use tollana_core::{
-    assign_local_ids, decode_text, hash_plugin_identity, ExecOutcome, HostRebind, Instance, Module,
-    PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaSlot, SuspendReason,
-    Value,
+    assign_local_ids, decode_text, hash_plugin_identity, CapHandle, ExecOutcome, ExportKind,
+    HostInterfaceError, HostRebind, Instance, JournalEventKind, JournalSink, Label, Module,
+    PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaDimension,
+    QuotaSlot, SuspendReason, TrapKind, Value,
 };
 
 struct Slot {
-    plugin: Box<dyn Plugin>,
+    plugin: Option<Box<dyn Plugin>>,
     hash: [u8; 32],
     plugin_id: u32,
 }
@@ -42,7 +43,7 @@ impl Host {
         }
         let hash = hash_plugin(&*plugin)?;
         self.slots.push(Slot {
-            plugin,
+            plugin: Some(plugin),
             hash,
             plugin_id: 0,
         });
@@ -66,15 +67,15 @@ impl Host {
         }
         self.slots
             .iter()
-            .find(|s| s.plugin.name() == name)
+            .find(|s| s.plugin.as_ref().is_some_and(|p| p.name() == name))
             .map(|s| s.plugin_id)
     }
 
     pub fn plugin_samples(&self, name: &str) -> Vec<(u32, i64)> {
         self.slots
             .iter()
-            .find(|s| s.plugin.name() == name)
-            .map(|s| s.plugin.recorded_samples())
+            .find(|s| s.plugin.as_ref().is_some_and(|p| p.name() == name))
+            .and_then(|s| s.plugin.as_ref().map(|p| p.recorded_samples()))
             .unwrap_or_default()
     }
 
@@ -97,10 +98,10 @@ impl Host {
                 identity: PluginIdentity {
                     plugin_id: slot.plugin_id,
                     identity_hash: slot.hash,
-                    name: slot.plugin.name().to_string(),
-                    version: slot.plugin.version().to_string(),
+                    name: slot.plugin.as_ref().unwrap().name().to_string(),
+                    version: slot.plugin.as_ref().unwrap().version().to_string(),
                 },
-                methods: slot.plugin.methods()?,
+                methods: slot.plugin.as_ref().unwrap().methods()?,
             });
         }
         self.instance = Some(Instance::instantiate_with(
@@ -127,21 +128,51 @@ impl Host {
         args: &[Value],
         fuel: u64,
     ) -> Result<ExecOutcome, HostError> {
-        let outcome = self
+        let result = self
             .instance
             .as_mut()
             .ok_or_else(|| HostError::new("not instantiated"))?
-            .invoke(export, args, fuel)?;
-        self.drive(outcome)
+            .invoke(export, args, fuel);
+        self.enter_drive(result)
     }
 
     pub fn continue_run(&mut self) -> Result<ExecOutcome, HostError> {
-        let outcome = self
+        let result = self
             .instance
             .as_mut()
             .ok_or_else(|| HostError::new("not instantiated"))?
-            .continue_run()?;
-        self.drive(outcome)
+            .continue_run();
+        self.enter_drive(result)
+    }
+
+    pub fn resume_continuation(
+        &mut self,
+        continuation_id: u32,
+        values: Vec<Value>,
+    ) -> Result<ExecOutcome, HostError> {
+        let before = self.continuation_ids();
+        let result = self
+            .instance
+            .as_mut()
+            .ok_or_else(|| HostError::new("not instantiated"))?
+            .resume(continuation_id, values);
+        if let Ok(outcome) = &result {
+            self.note_completed(&before, outcome);
+        }
+        self.enter_drive(result)
+    }
+
+    fn enter_drive(
+        &mut self,
+        result: Result<ExecOutcome, HostInterfaceError>,
+    ) -> Result<ExecOutcome, HostError> {
+        match result {
+            Ok(outcome) => self.drive(outcome),
+            Err(HostInterfaceError::HostCallPending) => self.drive(ExecOutcome::Suspended {
+                reason: SuspendReason::HostInvoke,
+            }),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn drive(&mut self, mut outcome: ExecOutcome) -> Result<ExecOutcome, HostError> {
@@ -149,18 +180,32 @@ impl Host {
             match &outcome {
                 ExecOutcome::Suspended {
                     reason: SuspendReason::HostInvoke,
-                } => {
-                    outcome = self.dispatch()?;
-                    if matches!(
-                        outcome,
-                        ExecOutcome::Suspended {
-                            reason: SuspendReason::HostInvoke
+                } => match self.dispatch_progress()? {
+                    Some(next) => outcome = next,
+                    None => return Ok(outcome),
+                },
+                ExecOutcome::Completed { .. } => {
+                    if self.has_pending_calls() {
+                        match self.dispatch_progress()? {
+                            Some(next) => outcome = next,
+                            None => {
+                                return Ok(ExecOutcome::Suspended {
+                                    reason: SuspendReason::HostInvoke,
+                                });
+                            }
                         }
-                    ) && self
-                        .instance
-                        .as_ref()
-                        .is_some_and(|i| !i.machine.pending_host_calls.is_empty())
-                    {
+                    } else if self.has_live_fibers() {
+                        match self.try_continue() {
+                            Ok(next) => outcome = next,
+                            Err(HostInterfaceError::HostCallPending) => {
+                                outcome = ExecOutcome::Suspended {
+                                    reason: SuspendReason::HostInvoke,
+                                };
+                            }
+                            Err(HostInterfaceError::InstanceIdle) => return Ok(outcome),
+                            Err(e) => return Err(e.into()),
+                        }
+                    } else {
                         return Ok(outcome);
                     }
                 }
@@ -169,35 +214,172 @@ impl Host {
         }
     }
 
-    fn dispatch(&mut self) -> Result<ExecOutcome, HostError> {
-        let call = self
+    fn try_continue(&mut self) -> Result<ExecOutcome, HostInterfaceError> {
+        self.instance.as_mut().expect("instantiated").continue_run()
+    }
+
+    fn has_pending_calls(&self) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(|i| !i.machine.pending_host_calls.is_empty())
+    }
+
+    fn has_live_fibers(&self) -> bool {
+        self.instance.as_ref().is_some_and(|i| {
+            i.machine
+                .continuations
+                .iter()
+                .any(|c| !c.call_frames.is_empty())
+        })
+    }
+
+    fn continuation_ids(&self) -> Vec<u32> {
+        self.instance
+            .as_ref()
+            .map(|i| {
+                i.machine
+                    .continuations
+                    .iter()
+                    .map(|c| c.continuation_identifier)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn dispatch_progress(&mut self) -> Result<Option<ExecOutcome>, HostError> {
+        let mut ids: Vec<u32> = self
             .instance
             .as_ref()
-            .and_then(|i| {
+            .map(|i| {
                 i.machine
                     .pending_host_calls
                     .iter()
-                    .min_by_key(|c| c.continuation_identifier)
-                    .cloned()
+                    .map(|c| c.continuation_identifier)
+                    .collect()
             })
-            .ok_or_else(|| HostError::new("no pending host call"))?;
+            .unwrap_or_default();
+        ids.sort_unstable();
+        for continuation_id in ids {
+            let Some(call) = self.instance.as_ref().and_then(|i| {
+                i.machine
+                    .pending_host_calls
+                    .iter()
+                    .find(|c| c.continuation_identifier == continuation_id)
+                    .cloned()
+            }) else {
+                continue;
+            };
+            if let Some(outcome) = self.dispatch_call(call)? {
+                return Ok(Some(outcome));
+            }
+        }
+        Ok(None)
+    }
+
+    fn dispatch_call(
+        &mut self,
+        call: tollana_core::HostCall,
+    ) -> Result<Option<ExecOutcome>, HostError> {
+        self.enforce_allowlist(&call)?;
+        self.charge_call(call.continuation_identifier)?;
         let idx = self
             .slots
             .iter()
             .position(|s| s.plugin_id == call.plugin_id)
             .ok_or_else(|| HostError::new(format!("unbound plugin {}", call.plugin_id)))?;
-        let result =
-            self.slots[idx]
-                .plugin
-                .invoke(call.method_id, &call.arguments, &call.capabilities)?;
-        match result {
+        let mut plugin = self.slots[idx]
+            .plugin
+            .take()
+            .ok_or_else(|| HostError::new("plugin detached"))?;
+        let result = {
+            let inst = self
+                .instance
+                .as_mut()
+                .ok_or_else(|| HostError::new("not instantiated"))?;
+            let mut ctx = InstanceCtx {
+                instance: inst,
+                caller: call.continuation_identifier,
+            };
+            plugin.invoke(
+                call.method_id,
+                &call.arguments,
+                &call.capabilities,
+                &mut ctx,
+            )
+        };
+        self.slots[idx].plugin = Some(plugin);
+        match result? {
             PluginResult::Immediate(values) => {
-                let inst = self.instance.as_mut().unwrap();
-                Ok(inst.resume(call.continuation_identifier, values)?)
+                let before = self.continuation_ids();
+                let outcome = self
+                    .instance
+                    .as_mut()
+                    .unwrap()
+                    .resume(call.continuation_identifier, values)?;
+                self.note_completed(&before, &outcome);
+                Ok(Some(outcome))
             }
-            PluginResult::Pending(_) => Ok(ExecOutcome::Suspended {
-                reason: SuspendReason::HostInvoke,
-            }),
+            PluginResult::Pending(_) => Ok(None),
+        }
+    }
+
+    fn enforce_allowlist(&mut self, call: &tollana_core::HostCall) -> Result<(), HostError> {
+        let allow = self.slots.iter().find_map(|s| {
+            s.plugin
+                .as_ref()
+                .and_then(|p| p.capability_allowlist(call.continuation_identifier))
+        });
+        if let Some(allow) = allow {
+            if !call
+                .capabilities
+                .iter()
+                .all(|c| allow.iter().any(|a| a == c))
+            {
+                let inst = self.instance.as_mut().unwrap();
+                inst.trap_pending(call.continuation_identifier, TrapKind::InvalidCapability)?;
+                return Err(HostError::new("capability attenuated"));
+            }
+        }
+        Ok(())
+    }
+
+    fn charge_call(&mut self, continuation_id: u32) -> Result<(), HostError> {
+        for slot in &mut self.slots {
+            if let Some(plugin) = slot.plugin.as_mut() {
+                plugin.charge_host_call(continuation_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn note_completed(&mut self, before: &[u32], outcome: &ExecOutcome) {
+        let ExecOutcome::Completed { results } = outcome else {
+            return;
+        };
+        let after = self.continuation_ids();
+        let Some(id) = before.iter().copied().find(|id| !after.contains(id)) else {
+            return;
+        };
+        for slot in &mut self.slots {
+            if let Some(plugin) = slot.plugin.as_mut() {
+                plugin.on_continuation_completed(id, results);
+            }
+        }
+        let mut events = Vec::new();
+        let mut credits = Vec::new();
+        for slot in &mut self.slots {
+            if let Some(plugin) = slot.plugin.as_mut() {
+                events.extend(plugin.take_events());
+                credits.extend(plugin.take_quota_credits());
+            }
+        }
+        if let Some(inst) = self.instance.as_mut() {
+            for ev in events {
+                inst.journal.append(ev, Label::Public);
+            }
+            for (dim, n) in credits {
+                inst.add_quota(dim, n);
+            }
         }
     }
 
@@ -207,7 +389,7 @@ impl Host {
             .iter()
             .map(|s| PluginStateEntry {
                 plugin_id: s.plugin_id,
-                blob: s.plugin.snapshot_state(),
+                blob: s.plugin.as_ref().unwrap().snapshot_state(),
             })
             .collect();
         let inst = self
@@ -246,7 +428,7 @@ impl Host {
                 .iter_mut()
                 .find(|s| s.hash == *hash)
                 .ok_or_else(|| HostError::new("plugin state hash mismatch"))?;
-            slot.plugin.restore_state(&entry.blob)?;
+            slot.plugin.as_mut().unwrap().restore_state(&entry.blob)?;
         }
         self.instance = Some(restored.instance);
         self.bound = true;
@@ -267,6 +449,8 @@ impl Host {
                 })?;
             let methods: Vec<(u32, u32)> = slot
                 .plugin
+                .as_ref()
+                .unwrap()
                 .methods()?
                 .into_iter()
                 .map(|(method_id, _)| (ident.plugin_id, method_id))
@@ -280,6 +464,68 @@ impl Host {
             });
         }
         Ok(rebind)
+    }
+}
+
+struct InstanceCtx<'a> {
+    instance: &'a mut Instance,
+    caller: u32,
+}
+
+impl PluginContext for InstanceCtx<'_> {
+    fn caller_continuation(&self) -> u32 {
+        self.caller
+    }
+
+    fn spawn_export(
+        &mut self,
+        export: &str,
+        args: &[Value],
+    ) -> Result<(u32, ExecOutcome), HostError> {
+        Ok(self.instance.spawn_continuation(export, args)?)
+    }
+
+    fn cancel_continuation(&mut self, id: u32) -> Result<(), HostError> {
+        Ok(self.instance.cancel_continuation(id)?)
+    }
+
+    fn function_export_name(&self, function_index: u32) -> Result<String, HostError> {
+        self.instance
+            .module
+            .exports
+            .iter()
+            .find(|e| e.kind == ExportKind::Function && e.index == function_index)
+            .map(|e| e.name.clone())
+            .ok_or_else(|| HostError::new(format!("function {function_index} is not exported")))
+    }
+
+    fn consume_quota(&mut self, dimension: QuotaDimension, amount: u64) -> bool {
+        self.instance.consume_quota(dimension, amount)
+    }
+
+    fn add_quota(&mut self, dimension: QuotaDimension, amount: u64) {
+        self.instance.add_quota(dimension, amount);
+    }
+
+    fn quota_remaining(&self, dimension: QuotaDimension) -> Option<u64> {
+        self.instance.quota_remaining(dimension)
+    }
+
+    fn live_capabilities(&self) -> Vec<CapHandle> {
+        self.instance
+            .machine
+            .capability_table
+            .iter()
+            .filter(|e| e.live)
+            .map(|e| CapHandle {
+                table_index: e.table_index,
+                generation: e.generation,
+            })
+            .collect()
+    }
+
+    fn emit(&mut self, kind: JournalEventKind) {
+        self.instance.journal.append(kind, Label::Public);
     }
 }
 
@@ -329,6 +575,7 @@ mod tests {
             _method_id: u32,
             _args: &[Value],
             _caps: &[CapHandle],
+            _ctx: &mut dyn PluginContext,
         ) -> Result<PluginResult, HostError> {
             Ok(PluginResult::Immediate(vec![Value::i32(1, Label::Public)]))
         }

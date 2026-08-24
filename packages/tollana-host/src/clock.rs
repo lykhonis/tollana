@@ -94,6 +94,7 @@ impl Plugin for Clock {
         method_id: u32,
         args: &[Value],
         _caps: &[CapHandle],
+        _ctx: &mut dyn crate::plugin::PluginContext,
     ) -> Result<PluginResult, HostError> {
         if !args.is_empty() {
             return Err(HostError::new("clock methods take no arguments"));

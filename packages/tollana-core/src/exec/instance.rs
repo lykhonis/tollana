@@ -627,6 +627,33 @@ impl Instance {
         Ok(inst)
     }
 
+    pub fn cancel_continuation(
+        &mut self,
+        continuation_identifier: u32,
+    ) -> Result<(), HostInterfaceError> {
+        self.reject_if_trapped()?;
+        if !self
+            .machine
+            .continuations
+            .iter()
+            .any(|c| c.continuation_identifier == continuation_identifier)
+        {
+            return Err(HostInterfaceError::Reject {
+                message: "unknown continuation".into(),
+            });
+        }
+        self.machine
+            .pending_host_calls
+            .retain(|c| c.continuation_identifier != continuation_identifier);
+        self.machine
+            .continuations
+            .retain(|c| c.continuation_identifier != continuation_identifier);
+        if self.machine.active_continuation_identifier == Some(continuation_identifier) {
+            self.machine.active_continuation_identifier = None;
+        }
+        Ok(())
+    }
+
     pub fn trap_pending(
         &mut self,
         continuation_identifier: u32,

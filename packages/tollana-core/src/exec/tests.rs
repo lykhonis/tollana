@@ -1463,3 +1463,28 @@ fn continue_runs_lowest_ready_id() {
     assert_eq!(inst.machine.continuations[0].continuation_identifier, 1);
     assert_completed(inst.continue_run().unwrap(), 2);
 }
+
+#[test]
+fn cancel_continuation_removes_fiber_not_fuel() {
+    let mut inst = with_echo(SIBLINGS);
+    assert_suspended_invoke(inst.invoke("a", &[], 1000).unwrap());
+    let (id_b, out) = inst.spawn_continuation("b", &[]).unwrap();
+    assert_eq!(id_b, 1);
+    assert_suspended_invoke(out);
+    let fuel = inst.machine.remaining_fuel;
+    inst.cancel_continuation(1).unwrap();
+    assert_eq!(inst.machine.remaining_fuel, fuel);
+    assert_eq!(inst.machine.continuations.len(), 1);
+    assert_eq!(inst.machine.continuations[0].continuation_identifier, 0);
+    assert_eq!(inst.machine.pending_host_calls.len(), 1);
+    assert_eq!(
+        inst.machine.pending_host_calls[0].continuation_identifier,
+        0
+    );
+    assert_eq!(
+        inst.cancel_continuation(1),
+        Err(HostInterfaceError::Reject {
+            message: "unknown continuation".into(),
+        })
+    );
+}

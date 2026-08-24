@@ -1,0 +1,27 @@
+{
+  "name": "goal",
+  "version": "1.0.0",
+  "methods": [
+    {
+      "id": 0,
+      "name": "spawn",
+      "params": ["i32"],
+      "results": ["i32"],
+      "capabilities": ["goal.spawn"]
+    },
+    {
+      "id": 1,
+      "name": "join",
+      "params": ["i32"],
+      "results": ["i32"],
+      "capabilities": ["goal.join"]
+    },
+    {
+      "id": 2,
+      "name": "cancel",
+      "params": ["i32"],
+      "results": ["unit"],
+      "capabilities": ["goal.cancel"]
+    }
+  ]
+}

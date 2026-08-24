@@ -3,6 +3,7 @@ use serde::Deserialize;
 use tollana_core::{FunctionType, ValueType};
 
 pub const CLOCK_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/clock.json");
+pub const GOAL_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/goal.json");
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PackageSchema {
@@ -66,5 +67,21 @@ mod tests {
         assert_eq!(schema.methods[1].id, 1);
         assert_eq!(schema.methods[1].name, "now_monotonic");
         assert!(schema.methods.iter().all(|m| m.params.is_empty()));
+    }
+
+    #[test]
+    fn goal_schema_fixture_parses() {
+        let schema = parse_package_schema(GOAL_SCHEMA_BYTES).unwrap();
+        assert_eq!(schema.name, "goal");
+        assert_eq!(schema.version, "1.0.0");
+        assert_eq!(schema.methods.len(), 3);
+        assert_eq!(schema.methods[0].id, 0);
+        assert_eq!(schema.methods[0].name, "spawn");
+        assert_eq!(schema.methods[0].params, ["i32"]);
+        assert_eq!(schema.methods[0].results, ["i32"]);
+        assert_eq!(schema.methods[0].capabilities, ["goal.spawn"]);
+        assert_eq!(schema.methods[1].name, "join");
+        assert_eq!(schema.methods[2].name, "cancel");
+        assert_eq!(schema.methods[2].results, ["unit"]);
     }
 }

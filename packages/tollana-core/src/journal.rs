@@ -93,6 +93,25 @@ pub enum JournalEventKind {
     InstanceCreated {
         plugins: Vec<PluginIdentity>,
     },
+    GoalSpawned {
+        goal_id: u32,
+        parent_goal_id: Option<u32>,
+        continuation_id: u32,
+        depth: u32,
+    },
+    GoalCompleted {
+        goal_id: u32,
+    },
+    GoalCancelled {
+        goal_id: u32,
+    },
+    GoalDenied {
+        reason: String,
+    },
+    CapabilityAttenuated {
+        continuation_id: u32,
+        allowed_count: u32,
+    },
 }
 
 impl JournalEventKind {
@@ -114,6 +133,11 @@ impl JournalEventKind {
             Self::SnapshotRestored { .. } => "SnapshotRestored",
             Self::InvalidCapabilityUse { .. } => "InvalidCapabilityUse",
             Self::InstanceCreated { .. } => "InstanceCreated",
+            Self::GoalSpawned { .. } => "GoalSpawned",
+            Self::GoalCompleted { .. } => "GoalCompleted",
+            Self::GoalCancelled { .. } => "GoalCancelled",
+            Self::GoalDenied { .. } => "GoalDenied",
+            Self::CapabilityAttenuated { .. } => "CapabilityAttenuated",
         }
     }
 
