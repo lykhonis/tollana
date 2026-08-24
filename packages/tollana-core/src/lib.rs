@@ -3,6 +3,7 @@ pub mod decode;
 pub mod exec;
 pub mod identity;
 pub mod instruction;
+pub mod journal;
 pub mod machine;
 pub mod snapshot;
 pub mod validate;
@@ -19,6 +20,9 @@ pub use identity::{
     IdentityError, PluginIdentityInput, IDENTITY_VERSION,
 };
 pub use instruction::{BlockType, Instruction};
+pub use journal::{
+    join_labels, JournalEvent, JournalEventKind, JournalSink, JournalValue, MemoryJournal,
+};
 pub use machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,
     MachineState, ProgramCounter, SuspendReason, TrapKind,

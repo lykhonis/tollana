@@ -705,6 +705,49 @@ Automatically recorded (non-exhaustive):
 
 Sensitivity labels travel into the journal; host policy redacts or restricts export of confidential/secret fields.
 
+### Journal v0 envelope (in-process)
+
+v0 is an **in-process** append-only log, not a durable journal file (that is a later slice). The container `journalCursor` reserved in §11 is the sink’s **next sequence number** after snapshot events have been appended. It is **advisory**: restore MUST NOT reconstitute events from the cursor. Restore **without** a log is legal.
+
+Each event MUST have:
+
+```text
+sequence:     u64              ; 0-based, strictly increasing by 1 per append in a sink
+run_id:       16 bytes         ; host-assigned; tests MAY use zeros; constant for a run
+sensitivity:  Label            ; join of payload labels, or Public if none
+event_type:   canonical name   ; UTF-8; see table
+body:         event-specific fields (in-process; not a file layout)
+```
+
+**IR-level names** (RFC 0002 Observability) MUST be used when the interpreter emits those events:
+
+| `event_type` | When | Body (minimum) |
+|--------------|------|----------------|
+| `InstructionStepped` | Each instruction (optional; **default off**) | `functionIndex`, `instructionIndex`, opcode name |
+| `FuelSuspended` | Guest suspends `OutOfFuel` | `remainingFuel` (0), `ProgramCounter` |
+| `FuelResumed` | Host `AddFuel` | `remainingFuel` after add (guest runs only on the following `Continue`) |
+| `HostCallSuspended` | `host.invoke` suspend | `pluginId`, `methodId`, arity; argument types/labels; payloads redacted per policy |
+| `HostCallResumed` | successful `Resume` | result types/labels; payloads redacted per policy |
+| `Trapped` | guest trap | `TrapKind`, `ProgramCounter` |
+| `Completed` | guest returns from entry | result types/labels; payloads redacted per policy |
+| `SnapshotCoreTaken` | `SnapshotCore` (including when the container path calls it) | module length, fuel, memory length, continuation count |
+| `SnapshotCoreRestored` | `RestoreCore` (including when the container path calls it) | same |
+| `InvalidCapabilityUse` | invoke with a non-live capability | `tableIndex`, `generation` (no host secrets) |
+| `InstanceCreated` | successful instantiate | plugin identity map (`pluginId`, `identityHash`, name, version) |
+
+**Architecture-level names** (container path, in addition to the `SnapshotCore*` events):
+
+| `event_type` | When | Body (minimum) |
+|--------------|------|----------------|
+| `SnapshotTaken` | byte `snapshot` / `snapshot_aead` after TIRS is encoded | `journalCursor` written into the container |
+| `SnapshotRestored` | byte `restore` after `RestoreCore` | `journalCursor` read from the container |
+
+A byte-level `snapshot` / `restore` MUST emit `SnapshotCoreTaken` / `SnapshotCoreRestored` because it calls `SnapshotCore` / `RestoreCore`.
+
+**Default sink:** MUST redact `Confidential` and `Secret` **payloads** (types and labels remain). MUST NOT emit `InstructionStepped` unless the host enables it. Appending journal events MUST NOT decrement IR fuel.
+
+**Same-process restore:** attaching the **same** sink MUST continue `sequence` (no reset, no duplicate prior events). New restore events MAY append with the next sequences. A different or empty sink starts at `sequence = 0`.
+
 ### Structured logging
 
 Guest-facing `log` API with levels (`trace` … `fatal`), structured fields, and automatic enrichment from run/goal context. Host configures level, sampling, **redaction**, and sinks.

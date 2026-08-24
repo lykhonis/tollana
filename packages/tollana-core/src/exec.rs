@@ -4,6 +4,7 @@ use crate::container::{
 use crate::decode::{decode_binary, encode_binary, ExportKind, FunctionType, GlobalInit, Module};
 use crate::instruction::BlockType;
 use crate::instruction::Instruction;
+use crate::journal::{join_labels, JournalEventKind, JournalSink, JournalValue, MemoryJournal};
 use crate::machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,
     MachineState, ProgramCounter, SuspendReason, TrapKind,
@@ -78,6 +79,7 @@ pub struct Instance {
     value_stack_cap: usize,
     call_frame_cap: usize,
     control_stack_cap: usize,
+    pub journal: MemoryJournal,
 }
 
 impl Instance {
@@ -190,7 +192,7 @@ impl Instance {
             active_continuation_identifier: None,
             continuations: Vec::new(),
         };
-        Ok(Self {
+        let mut inst = Self {
             module,
             machine,
             plugins: plugin_pairs,
@@ -200,7 +202,11 @@ impl Instance {
             value_stack_cap: VALUE_STACK_CAP,
             call_frame_cap: CALL_FRAME_CAP,
             control_stack_cap: CONTROL_STACK_CAP,
-        })
+            journal: MemoryJournal::new(),
+        };
+        let plugins = inst.plugin_identities.clone();
+        inst.emit(JournalEventKind::InstanceCreated { plugins }, Label::Public);
+        Ok(inst)
     }
 
     pub fn invoke(
@@ -266,6 +272,12 @@ impl Instance {
 
     pub fn add_fuel(&mut self, amount: u64) {
         self.machine.remaining_fuel = self.machine.remaining_fuel.saturating_add(amount);
+        self.emit(
+            JournalEventKind::FuelResumed {
+                remaining_fuel: self.machine.remaining_fuel,
+            },
+            Label::Public,
+        );
     }
 
     pub fn grant_cap(&mut self, handle: CapHandle, opaque: Vec<u8>) {
@@ -317,17 +329,28 @@ impl Instance {
                 }
             }
         }
+        let sensitivity = join_labels(&results);
+        let journal_results: Vec<JournalValue> = results
+            .iter()
+            .map(|v| JournalValue::from_value(v, false))
+            .collect();
         for v in results {
             if let Err(kind) = self.push(v) {
                 let pc = self.pc();
                 return Ok(self.trap(kind, pc));
             }
         }
+        self.emit(
+            JournalEventKind::HostCallResumed {
+                results: journal_results,
+            },
+            sensitivity,
+        );
         self.continue_run()
     }
 
-    pub fn snapshot_core(&self) -> CoreSnapshot {
-        CoreSnapshot {
+    pub fn snapshot_core(&mut self) -> CoreSnapshot {
+        let snap = CoreSnapshot {
             module_bytes: self.machine.module_bytes.clone(),
             entry_name: self.entry_export_name.clone(),
             plugin_identities: self.plugin_identities.clone(),
@@ -338,11 +361,28 @@ impl Instance {
             active_continuation_identifier: self.machine.active_continuation_identifier,
             continuations: self.machine.continuations.clone(),
             pending_host_call: self.machine.pending_host_call.clone(),
-        }
+        };
+        self.emit(
+            JournalEventKind::SnapshotCoreTaken {
+                module_len: snap.module_bytes.len() as u32,
+                remaining_fuel: snap.remaining_fuel,
+                memory_len: snap.linear_memory.len() as u32,
+                continuation_count: snap.continuations.len() as u32,
+            },
+            Label::Public,
+        );
+        snap
     }
 
-    pub fn snapshot(&self, plugin_state: Vec<PluginStateEntry>, journal_cursor: u64) -> Vec<u8> {
+    pub fn snapshot(&mut self, plugin_state: Vec<PluginStateEntry>) -> Vec<u8> {
         let tirs = encode_tirs(&self.snapshot_core());
+        self.emit(
+            JournalEventKind::SnapshotTaken {
+                journal_cursor: self.journal.next_sequence() + 1,
+            },
+            Label::Public,
+        );
+        let journal_cursor = self.journal.next_sequence();
         encode_container(
             &ContainerBody {
                 tirs,
@@ -354,13 +394,19 @@ impl Instance {
     }
 
     pub fn snapshot_aead(
-        &self,
+        &mut self,
         plugin_state: Vec<PluginStateEntry>,
-        journal_cursor: u64,
         key: &[u8; 32],
         nonce: &[u8; 12],
     ) -> Result<Vec<u8>, HostInterfaceError> {
         let tirs = encode_tirs(&self.snapshot_core());
+        self.emit(
+            JournalEventKind::SnapshotTaken {
+                journal_cursor: self.journal.next_sequence() + 1,
+            },
+            Label::Public,
+        );
+        let journal_cursor = self.journal.next_sequence();
         encode_container_aead(
             &ContainerBody {
                 tirs,
@@ -378,12 +424,19 @@ impl Instance {
         bytes: &[u8],
         rebind: &[HostRebind],
         aead_key: Option<&[u8; 32]>,
+        journal: Option<MemoryJournal>,
     ) -> Result<RestoreResult, HostInterfaceError> {
         let decoded = decode_container(bytes, aead_key)
             .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
         let core = decode_tirs(&decoded.body.tirs)
             .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
-        let instance = Self::restore_core(core, rebind)?;
+        let mut instance = Self::restore_core(core, rebind, journal)?;
+        instance.emit(
+            JournalEventKind::SnapshotRestored {
+                journal_cursor: decoded.body.journal_cursor,
+            },
+            Label::Public,
+        );
         Ok(RestoreResult {
             instance,
             plugin_state: decoded.body.plugin_state,
@@ -394,6 +447,7 @@ impl Instance {
     pub fn restore_core(
         snapshot: CoreSnapshot,
         rebind: &[HostRebind],
+        journal: Option<MemoryJournal>,
     ) -> Result<Self, HostInterfaceError> {
         let module = decode_binary(&snapshot.module_bytes)
             .map_err(|e| HostInterfaceError::Reject { message: e.message })?;
@@ -458,7 +512,11 @@ impl Instance {
         } else {
             None
         };
-        Ok(Self {
+        let module_len = snapshot.module_bytes.len() as u32;
+        let remaining_fuel = snapshot.remaining_fuel;
+        let memory_len = snapshot.linear_memory.len() as u32;
+        let continuation_count = snapshot.continuations.len() as u32;
+        let mut inst = Self {
             module,
             machine: MachineState {
                 module_bytes: snapshot.module_bytes,
@@ -477,7 +535,18 @@ impl Instance {
             value_stack_cap: VALUE_STACK_CAP,
             call_frame_cap: CALL_FRAME_CAP,
             control_stack_cap: CONTROL_STACK_CAP,
-        })
+            journal: journal.unwrap_or_default(),
+        };
+        inst.emit(
+            JournalEventKind::SnapshotCoreRestored {
+                module_len,
+                remaining_fuel,
+                memory_len,
+                continuation_count,
+            },
+            Label::Public,
+        );
+        Ok(inst)
     }
 
     pub fn trap_pending(&mut self, kind: TrapKind) -> Result<ExecOutcome, HostInterfaceError> {
@@ -513,8 +582,19 @@ impl Instance {
         }
     }
 
+    fn emit(&mut self, kind: JournalEventKind, sensitivity: Label) {
+        self.journal.append(kind, sensitivity);
+    }
+
     fn trap(&mut self, kind: TrapKind, pc: ProgramCounter) -> ExecOutcome {
         self.machine.active_continuation_identifier = None;
+        self.emit(
+            JournalEventKind::Trapped {
+                trap_kind: kind,
+                program_counter: pc,
+            },
+            Label::Public,
+        );
         ExecOutcome::Trapped {
             trap_kind: kind,
             program_counter: pc,
@@ -596,11 +676,28 @@ impl Instance {
             insts[pc.instruction_index as usize]
         };
         if self.machine.remaining_fuel == 0 {
+            self.emit(
+                JournalEventKind::FuelSuspended {
+                    remaining_fuel: 0,
+                    program_counter: pc,
+                },
+                Label::Public,
+            );
             return Step::Done(ExecOutcome::Suspended {
                 reason: SuspendReason::OutOfFuel,
             });
         }
         self.machine.remaining_fuel -= 1;
+        if self.journal.emit_instruction_stepped {
+            self.emit(
+                JournalEventKind::InstructionStepped {
+                    function_index: pc.function_index,
+                    instruction_index: pc.instruction_index,
+                    opcode: inst.name(),
+                },
+                Label::Public,
+            );
+        }
         match self.exec(inst) {
             Ok(ExecAction::Next) => {
                 self.frame_mut().instruction_index += 1;
@@ -613,6 +710,17 @@ impl Instance {
             Ok(ExecAction::Complete(results)) => {
                 self.machine.active_continuation_identifier = None;
                 self.machine.continuations.clear();
+                let sensitivity = join_labels(&results);
+                let journal_results: Vec<JournalValue> = results
+                    .iter()
+                    .map(|v| JournalValue::from_value(v, false))
+                    .collect();
+                self.emit(
+                    JournalEventKind::Completed {
+                        results: journal_results,
+                    },
+                    sensitivity,
+                );
                 Step::Done(ExecOutcome::Completed { results })
             }
             Err(kind) => Step::Done(self.trap(kind, pc)),
@@ -1097,6 +1205,13 @@ impl Instance {
         for a in &arguments {
             if let Some(h) = a.as_cap() {
                 if !self.cap_is_live(h) {
+                    self.emit(
+                        JournalEventKind::InvalidCapabilityUse {
+                            table_index: h.table_index,
+                            generation: h.generation,
+                        },
+                        Label::Public,
+                    );
                     return Err(TrapKind::InvalidCapability);
                 }
                 capabilities.push(h);
@@ -1106,6 +1221,11 @@ impl Instance {
             return Err(TrapKind::HostNotFound);
         }
         self.frame_mut().instruction_index += 1;
+        let sensitivity = join_labels(&arguments);
+        let journal_args: Vec<JournalValue> = arguments
+            .iter()
+            .map(|v| JournalValue::from_value(v, false))
+            .collect();
         self.machine.pending_host_call = Some(HostCall {
             plugin_id,
             method_id,
@@ -1113,6 +1233,15 @@ impl Instance {
             capabilities,
             continuation_identifier: 0,
         });
+        self.emit(
+            JournalEventKind::HostCallSuspended {
+                plugin_id,
+                method_id,
+                arity: journal_args.len() as u32,
+                arguments: journal_args,
+            },
+            sensitivity,
+        );
         Ok(ExecAction::Suspend)
     }
 
@@ -1284,6 +1413,7 @@ mod tests {
     use super::*;
     use crate::decode::decode_text;
     use crate::identity::{assign_local_ids, hash_plugin_identity, PluginIdentityInput};
+    use crate::journal::{JournalEventKind, JournalSink};
     use crate::value::{CapHandle, Label, ValueType};
     use std::collections::HashMap;
 
@@ -1929,7 +2059,7 @@ mod tests {
         assert!(snap.capability_table.is_empty());
         let rebind = rebind_from(&inst);
         drop(inst);
-        let mut restored = Instance::restore_core(snap, &rebind).unwrap();
+        let mut restored = Instance::restore_core(snap, &rebind, None).unwrap();
         assert_eq!(restored.machine.remaining_fuel, 998);
         let out = restored
             .resume(vec![Value::i32(41, Label::Public)])
@@ -1960,13 +2090,14 @@ mod tests {
         let mut inst = with_echo(src);
         let _ = inst.invoke("main", &[], 1000).unwrap();
         let fuel = inst.machine.remaining_fuel;
-        let bytes = inst.snapshot(Vec::new(), 0);
+        let bytes = inst.snapshot(Vec::new());
         assert_eq!(inst.machine.remaining_fuel, fuel);
+        let cursor = inst.journal.next_sequence();
         let rebind = rebind_from(&inst);
         drop(inst);
-        let restored = Instance::restore(&bytes, &rebind, None).unwrap();
+        let restored = Instance::restore(&bytes, &rebind, None, None).unwrap();
         assert!(restored.plugin_state.is_empty());
-        assert_eq!(restored.journal_cursor, 0);
+        assert_eq!(restored.journal_cursor, cursor);
         let mut inst = restored.instance;
         assert_eq!(inst.machine.remaining_fuel, 998);
         let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
@@ -1993,11 +2124,11 @@ mod tests {
 "#;
         let mut inst = with_echo(src);
         let _ = inst.invoke("main", &[], 1000).unwrap();
-        let mut bytes = inst.snapshot(Vec::new(), 0);
+        let mut bytes = inst.snapshot(Vec::new());
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;
         let rebind = rebind_from(&inst);
-        match Instance::restore(&bytes, &rebind, None) {
+        match Instance::restore(&bytes, &rebind, None, None) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(
                     message.contains("checksum")
@@ -2028,15 +2159,15 @@ mod tests {
         let _ = inst.invoke("main", &[], 1000).unwrap();
         let key = [0x11u8; 32];
         let nonce = [0x22u8; 12];
-        let bytes = inst.snapshot_aead(Vec::new(), 0, &key, &nonce).unwrap();
+        let bytes = inst.snapshot_aead(Vec::new(), &key, &nonce).unwrap();
         let rebind = rebind_from(&inst);
         drop(inst);
-        match Instance::restore(&bytes, &rebind, Some(&[0x33u8; 32])) {
+        match Instance::restore(&bytes, &rebind, Some(&[0x33u8; 32]), None) {
             Err(HostInterfaceError::Reject { .. }) => {}
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("expected reject"),
         }
-        let restored = Instance::restore(&bytes, &rebind, Some(&key)).unwrap();
+        let restored = Instance::restore(&bytes, &rebind, Some(&key), None).unwrap();
         let mut inst = restored.instance;
         let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
         match out {
@@ -2065,7 +2196,7 @@ mod tests {
         let snap = inst.snapshot_core();
         let mut rebind = rebind_from(&inst);
         rebind[0].identity_hash[0] ^= 0xff;
-        match Instance::restore_core(snap, &rebind) {
+        match Instance::restore_core(snap, &rebind, None) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(message.contains("identity"));
             }
@@ -2097,7 +2228,7 @@ mod tests {
         let rebind = rebind_from(&inst);
         let mut snap = inst.snapshot_core();
         snap.capability_table[0].generation = 2;
-        match Instance::restore_core(snap, &rebind) {
+        match Instance::restore_core(snap, &rebind, None) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(message.contains("capability"));
             }
@@ -2174,7 +2305,7 @@ mod tests {
 "#;
         let module = decode_text(src).unwrap();
         let plugins = fixture_bindings(&module);
-        let inst = Instance::instantiate_with(module, &plugins, Vec::new(), 16).unwrap();
+        let mut inst = Instance::instantiate_with(module, &plugins, Vec::new(), 16).unwrap();
         let snap = inst.snapshot_core();
         assert_eq!(snap.plugin_identities[0].plugin_id, 7);
         assert_ne!(snap.plugin_identities[0].identity_hash, [0u8; 32]);
@@ -2272,16 +2403,147 @@ mod tests {
                 methods: vec![(clock_id, 0)],
             },
         ];
-        Instance::restore_core(snap.clone(), &matching).expect("matching hashes restore");
+        Instance::restore_core(snap.clone(), &matching, None).expect("matching hashes restore");
         let mut rebound = matching.clone();
         rebound[0].identity_hash = echo_v2_hash;
         rebound[0].version = "2.0.0".into();
-        match Instance::restore_core(snap, &rebound) {
+        match Instance::restore_core(snap, &rebound, None) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(message.contains("identity"));
             }
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("expected reject of echo v2"),
         }
+    }
+
+    const PROGRAM_2: &str = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (i32.add
+      (host.invoke Echo (i32.const 41))
+      (i32.const 1))))
+"#;
+
+    #[test]
+    fn program_2_journal_order_same_process_restore() {
+        let mut inst = with_echo(PROGRAM_2);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        assert_eq!(
+            inst.journal.event_names(),
+            ["InstanceCreated", "HostCallSuspended"]
+        );
+        let bytes = inst.snapshot(Vec::new());
+        assert_eq!(
+            inst.journal.event_names(),
+            [
+                "InstanceCreated",
+                "HostCallSuspended",
+                "SnapshotCoreTaken",
+                "SnapshotTaken"
+            ]
+        );
+        assert!(!inst.journal.event_names().contains(&"InstructionStepped"));
+        let seqs: Vec<u64> = inst.journal.events.iter().map(|e| e.sequence).collect();
+        assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>());
+        let cursor = inst.journal.next_sequence();
+        let journal = inst.journal.clone();
+        let rebind = rebind_from(&inst);
+        let mut restored = Instance::restore(&bytes, &rebind, None, Some(journal)).unwrap();
+        assert_eq!(restored.journal_cursor, cursor);
+        let names = restored.instance.journal.event_names();
+        assert_eq!(
+            names,
+            [
+                "InstanceCreated",
+                "HostCallSuspended",
+                "SnapshotCoreTaken",
+                "SnapshotTaken",
+                "SnapshotCoreRestored",
+                "SnapshotRestored"
+            ]
+        );
+        let seqs: Vec<u64> = restored
+            .instance
+            .journal
+            .events
+            .iter()
+            .map(|e| e.sequence)
+            .collect();
+        assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>());
+        let out = restored
+            .instance
+            .resume(vec![Value::i32(41, Label::Public)])
+            .unwrap();
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            restored.instance.journal.event_names(),
+            [
+                "InstanceCreated",
+                "HostCallSuspended",
+                "SnapshotCoreTaken",
+                "SnapshotTaken",
+                "SnapshotCoreRestored",
+                "SnapshotRestored",
+                "HostCallResumed",
+                "Completed"
+            ]
+        );
+        assert_eq!(restored.instance.machine.remaining_fuel, 995);
+    }
+
+    #[test]
+    fn default_journal_redacts_confidential_host_call_args() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (param i32) (result i32)
+    (host.invoke Echo (local.get 0))))
+"#;
+        let mut inst = with_echo(src);
+        let _ = inst
+            .invoke("main", &[Value::i32(41, Label::Confidential)], 1000)
+            .unwrap();
+        let suspended = inst
+            .journal
+            .events
+            .iter()
+            .find(|e| e.kind.name() == "HostCallSuspended")
+            .unwrap();
+        assert_eq!(suspended.sensitivity, Label::Confidential);
+        match &suspended.kind {
+            JournalEventKind::HostCallSuspended { arguments, .. } => {
+                assert_eq!(arguments[0].label, Label::Confidential);
+                assert_eq!(arguments[0].payload, None);
+            }
+            other => panic!("{}", other.name()),
+        }
+    }
+
+    #[test]
+    fn restore_without_journal_starts_new_seq() {
+        let mut inst = with_echo(PROGRAM_2);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let bytes = inst.snapshot(Vec::new());
+        let rebind = rebind_from(&inst);
+        let restored = Instance::restore(&bytes, &rebind, None, None).unwrap();
+        assert_eq!(
+            restored.instance.journal.event_names(),
+            ["SnapshotCoreRestored", "SnapshotRestored"]
+        );
+        assert_eq!(restored.instance.journal.events[0].sequence, 0);
     }
 }

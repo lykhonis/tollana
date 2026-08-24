@@ -1842,6 +1842,8 @@ The journal is architecture-owned. The interpreter SHOULD emit these IR-level ev
 
 `Confidential` / `Secret` payloads MUST NOT be written to unrestricted logs. Hosts MUST apply redaction ([RFC 0001](architecture.md) §13).
 
+The v0 **event envelope** (`sequence`, `run_id`, `sensitivity`, `event_type`, body), default-off `InstructionStepped`, container `journalCursor` as an advisory next-sequence, and architecture-level `SnapshotTaken` / `SnapshotRestored` are specified in [RFC 0001 §13](architecture.md#journal-v0-envelope-in-process). This RFC names the IR-level events only.
+
 ---
 
 
