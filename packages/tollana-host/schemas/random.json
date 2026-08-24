@@ -1,0 +1,13 @@
+{
+  "name": "random",
+  "version": "1.0.0",
+  "methods": [
+    {
+      "id": 0,
+      "name": "next",
+      "params": [],
+      "results": ["i64"],
+      "capabilities": ["random.read"]
+    }
+  ]
+}

@@ -13,6 +13,8 @@ pub struct Clock {
     wall_millis: i64,
     monotonic_millis: i64,
     samples: Vec<(u32, i64)>,
+    replay: Option<Vec<(u32, i64)>>,
+    replay_index: usize,
 }
 
 impl Clock {
@@ -22,6 +24,8 @@ impl Clock {
             wall_millis,
             monotonic_millis,
             samples: Vec::new(),
+            replay: None,
+            replay_index: 0,
         }
     }
 
@@ -31,6 +35,19 @@ impl Clock {
             wall_millis: 0,
             monotonic_millis: 0,
             samples: Vec::new(),
+            replay: None,
+            replay_index: 0,
+        }
+    }
+
+    pub fn replay(samples: Vec<(u32, i64)>) -> Self {
+        Self {
+            is_virtual: true,
+            wall_millis: 0,
+            monotonic_millis: 0,
+            samples: Vec::new(),
+            replay: Some(samples),
+            replay_index: 0,
         }
     }
 
@@ -99,10 +116,22 @@ impl Plugin for Clock {
         if !args.is_empty() {
             return Err(HostError::new("clock methods take no arguments"));
         }
-        let value = match method_id {
-            METHOD_NOW_WALL => self.read_wall(),
-            METHOD_NOW_MONOTONIC => self.read_monotonic(),
-            other => return Err(HostError::new(format!("unknown clock method {other}"))),
+        let value = if let Some(samples) = &self.replay {
+            let (mid, recorded) = samples
+                .get(self.replay_index)
+                .copied()
+                .ok_or_else(|| HostError::new("clock_replay_exhausted"))?;
+            if mid != method_id {
+                return Err(HostError::new("clock_replay_method_mismatch"));
+            }
+            self.replay_index += 1;
+            recorded
+        } else {
+            match method_id {
+                METHOD_NOW_WALL => self.read_wall(),
+                METHOD_NOW_MONOTONIC => self.read_monotonic(),
+                other => return Err(HostError::new(format!("unknown clock method {other}"))),
+            }
         };
         self.samples.push((method_id, value));
         Ok(PluginResult::Immediate(vec![Value::i64(
@@ -112,24 +141,52 @@ impl Plugin for Clock {
     }
 
     fn snapshot_state(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(17);
+        let mut buf = Vec::new();
+        buf.push(1);
         buf.push(u8::from(self.is_virtual));
         buf.extend_from_slice(&self.wall_millis.to_le_bytes());
         buf.extend_from_slice(&self.monotonic_millis.to_le_bytes());
+        let rest = match &self.replay {
+            Some(samples) => &samples[self.replay_index.min(samples.len())..],
+            None => &[],
+        };
+        buf.extend_from_slice(&(rest.len() as u32).to_le_bytes());
+        for (method_id, value) in rest {
+            buf.extend_from_slice(&method_id.to_le_bytes());
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
         buf
     }
 
     fn restore_state(&mut self, bytes: &[u8]) -> Result<(), HostError> {
-        if bytes.len() != 17 {
+        if bytes.len() < 22 || bytes[0] != 1 {
             return Err(HostError::new("invalid clock snapshot blob"));
         }
-        self.is_virtual = bytes[0] != 0;
+        self.is_virtual = bytes[1] != 0;
         let mut wall = [0u8; 8];
-        wall.copy_from_slice(&bytes[1..9]);
+        wall.copy_from_slice(&bytes[2..10]);
         let mut monotonic = [0u8; 8];
-        monotonic.copy_from_slice(&bytes[9..17]);
+        monotonic.copy_from_slice(&bytes[10..18]);
         self.wall_millis = i64::from_le_bytes(wall);
         self.monotonic_millis = i64::from_le_bytes(monotonic);
+        let n = u32::from_le_bytes(bytes[18..22].try_into().unwrap()) as usize;
+        let mut pos = 22;
+        let mut rest = Vec::with_capacity(n);
+        for _ in 0..n {
+            if pos + 12 > bytes.len() {
+                return Err(HostError::new("truncated clock snapshot blob"));
+            }
+            let method_id = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            let value = i64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            rest.push((method_id, value));
+        }
+        if pos != bytes.len() {
+            return Err(HostError::new("trailing clock snapshot bytes"));
+        }
+        self.replay = if rest.is_empty() { None } else { Some(rest) };
+        self.replay_index = 0;
         Ok(())
     }
 

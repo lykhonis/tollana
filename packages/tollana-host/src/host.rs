@@ -5,7 +5,7 @@ use tollana_core::{
     assign_local_ids, decode_text, hash_plugin_identity, CapHandle, ExecOutcome, ExportKind,
     HostCall, HostInterfaceError, HostRebind, Instance, JournalEventKind, JournalSink, Label,
     Module, PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaDimension,
-    QuotaSlot, SuspendReason, TrapKind, Value,
+    QuotaSlot, SuspendReason, TrapKind, Value, ValuePayload,
 };
 
 struct Slot {
@@ -77,6 +77,73 @@ impl Host {
             .find(|s| s.plugin.as_ref().is_some_and(|p| p.name() == name))
             .and_then(|s| s.plugin.as_ref().map(|p| p.recorded_samples()))
             .unwrap_or_default()
+    }
+
+    pub fn journal_plugin_results(&self, name: &str) -> Vec<(u32, i64)> {
+        let Some(plugin_id) = self.plugin_id(name) else {
+            return Vec::new();
+        };
+        let Some(inst) = self.instance() else {
+            return Vec::new();
+        };
+        inst.journal
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                JournalEventKind::HostCallResumed {
+                    plugin_id: pid,
+                    method_id,
+                    results,
+                    ..
+                } if *pid == plugin_id => {
+                    let payload = results.first()?.payload?;
+                    let bits = match payload {
+                        ValuePayload::I64(v) => v,
+                        ValuePayload::I32(v) => i64::from(v),
+                        _ => return None,
+                    };
+                    Some((*method_id, bits))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn grant_cap(&mut self, handle: CapHandle, opaque: Vec<u8>) -> Result<(), HostError> {
+        self.instance
+            .as_mut()
+            .ok_or_else(|| HostError::new("not instantiated"))?
+            .grant_cap(handle, opaque);
+        Ok(())
+    }
+
+    pub fn write_linear_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<(), HostError> {
+        let inst = self
+            .instance
+            .as_mut()
+            .ok_or_else(|| HostError::new("not instantiated"))?;
+        let end = offset
+            .checked_add(bytes.len())
+            .ok_or_else(|| HostError::new("memory range overflow"))?;
+        if end > inst.machine.linear_memory.len() {
+            return Err(HostError::new("out of bounds memory"));
+        }
+        inst.machine.linear_memory[offset..end].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    pub fn read_linear_memory(&self, offset: usize, len: usize) -> Result<Vec<u8>, HostError> {
+        let inst = self
+            .instance
+            .as_ref()
+            .ok_or_else(|| HostError::new("not instantiated"))?;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| HostError::new("memory range overflow"))?;
+        if end > inst.machine.linear_memory.len() {
+            return Err(HostError::new("out of bounds memory"));
+        }
+        Ok(inst.machine.linear_memory[offset..end].to_vec())
     }
 
     pub fn instantiate_text(&mut self, src: &str) -> Result<(), HostError> {
@@ -539,6 +606,35 @@ impl PluginContext for InstanceCtx<'_> {
             })
             .collect()
     }
+
+    fn read_memory(&self, ptr: i32, len: i32) -> Result<Vec<u8>, HostError> {
+        let range = memory_range(self.instance.machine.linear_memory.len(), ptr, len)?;
+        Ok(self.instance.machine.linear_memory[range].to_vec())
+    }
+
+    fn write_memory(&mut self, ptr: i32, bytes: &[u8]) -> Result<(), HostError> {
+        let range = memory_range(
+            self.instance.machine.linear_memory.len(),
+            ptr,
+            i32::try_from(bytes.len()).map_err(|_| HostError::new("memory range overflow"))?,
+        )?;
+        self.instance.machine.linear_memory[range].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+fn memory_range(mem_len: usize, ptr: i32, len: i32) -> Result<std::ops::Range<usize>, HostError> {
+    if len < 0 {
+        return Err(HostError::new("negative memory length"));
+    }
+    let start = ptr as u32 as usize;
+    let end = start
+        .checked_add(len as u32 as usize)
+        .ok_or_else(|| HostError::new("memory range overflow"))?;
+    if end > mem_len {
+        return Err(HostError::new("out of bounds memory"));
+    }
+    Ok(start..end)
 }
 
 fn hash_plugin(plugin: &dyn Plugin) -> Result<[u8; 32], HostError> {

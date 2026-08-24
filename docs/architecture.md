@@ -658,7 +658,7 @@ Snapshots are random-access checkpoints. Combined with the journal, a debugger c
 | **Strict** | Bit-identical re-execution using recorded nondeterminism |
 | **Semantic** | Same structure and inputs; allow model/version variation (useful for evals) |
 
-Nondeterministic inputs (model outputs, network, random, clock) are controlled or recorded in the journal for strict replay.
+Nondeterministic inputs (model outputs, network, random, clock) are controlled or recorded in the journal for strict replay. Strict replay of `clock` and `random` MUST use recorded `HostCallResumed` payloads (plugin identity map + `methodId`) as the source of those values; hosts MUST NOT re-sample wall time or entropy when replaying a recorded run.
 
 ---
 
@@ -874,11 +874,46 @@ Essential plugins beyond AI/context/goal/metrics/code:
 | **clock** | Wall + monotonic time, timers; **deterministic / virtual clock** for replay |
 | **random** | Secure random + seedable PRNG for deterministic mode |
 
+v0 representation: `fs`, `net`, `clock`, and `random` are **equal packages** (well-known **names** only; no reserved `pluginId`). Guest methods use IR `Value`s. A memory filesystem, an HTTP test double, a virtual clock, and a seedable PRNG are valid implementations; swapping an implementation MUST NOT require a guest module change when identity (name, version, schema) is unchanged.
+
+Guest-owned names (paths, URLs, fetch headers and bodies) MUST live in **guest linear memory**. The guest (or generated SDK) writes UTF-8 / request bytes and passes `(ptr, len)` as `i32`. The host MUST NOT require interned path or URL ids for those packages. Host-owned catalogs (e.g. `context` URIs) MAY still use host-side ids.
+
+v0 `fs` methods: `read` (`Capability, i32 ptr, i32 len → i32`), `write` (`Capability, i32 ptr, i32 len, i32 payload → unit`), `list` (`Capability → i32` count). The capability is a **preopen** of a virtual root. The pointer/length is a guest path relative to that root (or an absolute path that MUST still be under it). An escape MUST fail the host call (`HostCallFailed`), not succeed as a result `Value`. File **contents** in v0 MAY be an `i32` stub. A memory backend is sufficient for v0. I/O MAY `ConsumeQuota(IoBytes)`.
+
+v0 `net` methods: `fetch` (`Capability, i32 req_ptr, i32 req_len, i32 dst_ptr, i32 dst_len → i32` bytes written). The request and response are versioned records in guest linear memory (not IR strings and not host-interned URLs). The host allow-list is policy on the request URL: a URL not on the list MUST fail the host call (`HostCallFailed`). If `dst_len` is smaller than the encoded response, the call MUST fail (`HostCallFailed`) without a partial success `Value`. A test double is a valid backend; production HTTP, TLS, sockets, and streaming bodies are out of v0.
+
+v0 net **request** record (little-endian):
+
+```text
+version: u8 = 1
+method:  u8      ; 0 GET, 1 POST, 2 PUT, 3 PATCH, 4 DELETE, 5 HEAD
+flags:   u16     ; bit0 = follow redirects; unknown bits MUST be ignored
+url:     u32 len + UTF-8
+headers: u32 count, then count × (u32 name_len + UTF-8, u32 value_len + UTF-8)
+body:    u32 len + bytes
+```
+
+Unknown `version` MUST fail the host call. Empty headers and body are valid. Extra options later MUST be added as new record fields or a version bump, not as additional `host.invoke` parameters.
+
+v0 net **response** record written to `dst`:
+
+```text
+version: u8 = 1
+status:  u16
+flags:   u16
+headers: same layout as request
+body:    u32 len + bytes
+```
+
+v0 `clock` methods: `now_wall` and `now_monotonic` (`→ i64`). Virtual/deterministic mode is a valid implementation. Wall samples required for strict replay are the `HostCallResumed` payloads of this package.
+
+v0 `random` methods: `next` (`→ i64`). Secure entropy and a seedable PRNG are both valid. Strict replay MUST NOT draw new entropy; it MUST replay recorded `HostCallResumed` payloads of this package.
+
 Also useful: stdio capture, config/secrets as capabilities, guest `log`.
 
 Usually restricted or omitted: subprocesses, raw threads (continuations replace them), unconstrained env. Isolated `code.run` does not imply a subprocess; it is another `MachineState` scheduled by the core.
 
-All resource access is capability-based, awaitable, journaled, and snapshot-aware.
+All resource access is capability-based, awaitable, journaled, and snapshot-aware. Calls are journaled only as `HostCallSuspended` / `HostCallResumed` / `HostCallFailed`; packages MUST NOT introduce per-method event names.
 
 ---
 

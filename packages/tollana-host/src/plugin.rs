@@ -20,6 +20,14 @@ pub trait PluginContext {
     fn add_quota(&mut self, dimension: QuotaDimension, amount: u64);
     fn quota_remaining(&self, dimension: QuotaDimension) -> Option<u64>;
     fn live_capabilities(&self) -> Vec<CapHandle>;
+    fn read_memory(&self, ptr: i32, len: i32) -> Result<Vec<u8>, HostError> {
+        let _ = (ptr, len);
+        Err(HostError::new("plugin context has no linear memory"))
+    }
+    fn write_memory(&mut self, ptr: i32, bytes: &[u8]) -> Result<(), HostError> {
+        let _ = (ptr, bytes);
+        Err(HostError::new("plugin context has no linear memory"))
+    }
 }
 
 pub trait Plugin {
