@@ -1,6 +1,7 @@
 pub mod container;
 pub mod decode;
 pub mod exec;
+pub mod identity;
 pub mod instruction;
 pub mod machine;
 pub mod snapshot;
@@ -12,7 +13,11 @@ pub use container::{
     PluginStateEntry,
 };
 pub use decode::{decode, decode_binary, decode_text, encode_binary, DecodeError, Module};
-pub use exec::{ExecOutcome, HostInterfaceError, Instance, RestoreResult};
+pub use exec::{ExecOutcome, HostInterfaceError, Instance, PluginBinding, RestoreResult};
+pub use identity::{
+    assign_local_ids, encode_plugin_identity, hash_canonical_bytes, hash_plugin_identity,
+    IdentityError, PluginIdentityInput, IDENTITY_VERSION,
+};
 pub use instruction::{BlockType, Instruction};
 pub use machine::{
     CallFrame, CapabilityTableEntry, Continuation, ControlLabel, ControlLabelKind, HostCall,

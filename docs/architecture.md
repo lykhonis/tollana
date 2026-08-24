@@ -247,25 +247,102 @@ host.invoke(pluginId, methodId, arguments, capabilities) -> result | suspend
 
 | Layer | Purpose | Form |
 |-------|---------|------|
-| **Global identity** | Durable, content-addressed, decentralized | `SHA-256` of the canonical serialization of `(name + version + schema + metadata [+ optional implementation digest])` |
+| **Global identity** | Durable, content-addressed, decentralized | `SHA-256` of the [v0 canonical identity bytes](#canonical-identity-bytes-v0) |
 | **Local dense ID** | Hot-path numeric handle | `u32` assigned per instance |
 
-Guest SDKs and the interpreter see **only** the local `u32`s. Durable identity lives in the host and in snapshots.
+Guest SDKs and the interpreter see **only** the local `u32`s. Durable identity lives in the host and in snapshots. Identity is the content hash, never a well-known name, never a reserved `pluginId`, and never a registry or GitHub coordinate.
+
+### Canonical identity bytes (v0)
+
+The preimage of a plugin’s identity hash is a single little-endian byte string. Field order is fixed. Implementations MUST encode this layout exactly; they MUST NOT insert padding, domain tags other than `TLID`, or a trailing checksum.
+
+```text
+magic:                 54 4C 49 44     ; ASCII "TLID" (domain separator, not a file magic)
+identityVersion:       u16 = 1
+nameLength:            u32
+name:                  nameLength bytes, UTF-8
+versionLength:         u32
+version:               versionLength bytes, UTF-8
+schemaLength:          u32
+schema:                schemaLength bytes, opaque schema document
+metadataLength:        u32
+metadata:              metadataLength bytes, opaque (MAY be empty)
+implementationPresent: u8              ; 0 = absent, 1 = present
+implementationDigest:  32 bytes        ; only if implementationPresent = 1
+```
+
+`identityVersion` is part of the hashed preimage so a future layout can bump the field and produce a different hash without a second hasher. Encoders MUST write `identityVersion = 1`. Restore matches `identityHash` only; it MUST NOT parse these canonical bytes out of a snapshot.
+
+- `name` and `version` MUST be non-empty UTF-8 and MUST NOT contain U+0000.
+- `schema` is the plugin schema document bytes as supplied by the host. MUST NOT be replaced by a nested digest unless those digest bytes *are* the schema document the host chose to hash. Empty schema is legal.
+- `metadata` is opaque and MUST be present as a length-prefixed field even when empty (`metadataLength = 0`).
+- `implementationPresent` other than `0` or `1` is not a valid canonical encoding. When `0`, `implementationDigest` MUST be omitted. When `1`, `implementationDigest` MUST be the 32-byte SHA-256 of the implementation artifact the host is binding (the core does not compute this digest).
+- Local folders and remote packages MUST produce this same preimage from the same `(name, version, schema, metadata, optional implementation digest)`.
+
+**Identity hash:** `identityHash = SHA-256(canonical bytes)` (exactly 32 bytes). A function that hashes **already-canonical** bytes MUST be SHA-256 of those bytes with no extra prefix.
+
+Omitting the implementation digest versus including one MUST yield different hashes. Changing `name`, `version`, `schema`, or `metadata` MUST yield a different hash.
 
 ### Assignment rules
 
 1. Host resolves plugins (registries, GitHub, local folders, …).
-2. Computes the content hash for each — this is the identity.
-3. Sorts by identity bytes and assigns local IDs `0..N` (any stable total order is fine; sort-by-hash is the default).
-4. Guest SDKs and the interpreter see only those local `u32`s.
+2. Encodes canonical identity bytes and computes `identityHash` for each — this is the identity.
+3. Default: sort by `identityHash` as unsigned 32-byte strings (memcmp / lexicographic byte order) and assign local IDs `0..N` in that order. Duplicate `identityHash` values MUST be rejected. A host MAY choose another stable total order if it writes those same local IDs into the guest module; interoperable tests MUST use sort-by-hash.
+4. Guest SDKs and the interpreter see only those local `u32`s. The interpreter MUST NOT re-number `pluginId`s at instantiate (RFC 0002).
 5. Snapshot stores the full mapping `{local_id, identity_hash, name, version}`.
 6. On restore the host MUST supply matching content hashes and re-apply the **same** local identifiers.
 
 **Local folders** and remote packages MUST use the **exact same hashing rules**.
 
+### Golden vectors (v0)
+
+All hashes are SHA-256 of the canonical encoding above, lowercase hex.
+
+**Vector A** — `name = "echo"`, `version = "1.0.0"`, `schema = "(schema echo v1)"` (ASCII), empty metadata, implementation digest absent.
+
+Canonical bytes (48 bytes):
+
+```text
+54 4c 49 44 01 00 04 00 00 00 65 63 68 6f 05 00
+00 00 31 2e 30 2e 30 10 00 00 00 28 73 63 68 65
+6d 61 20 65 63 68 6f 20 76 31 29 00 00 00 00 00
+```
+
+`identityHash` =
+
+`b53818f082a602686525d386618246569a4f74a4997aa3dbe5006f5644ab5ba3`
+
+**Vector B** — same as A except `version = "2.0.0"`.
+
+`identityHash` =
+
+`db97a544bfdef8e2fd10e80b152b7418568c3f856b72bff0701de5d8b335cb2d`
+
+**Vector C** — same as A except `implementationPresent = 1` and `implementationDigest` is 32 bytes `0x11`.
+
+`identityHash` =
+
+`d93ad774747d2adb651866d0d24ef29783f0dcd0f431cda761da1c03473f67d0`
+
+**Vector D** — `name = "clock"`, `version = "1.0.0"`, `schema = "(schema clock v1)"` (ASCII), empty metadata, implementation digest absent.
+
+`identityHash` =
+
+`2a1ca0a188fe61311c1dd8d9f73f2685d9ae8e6199db222da78977c3d3526dfa`
+
+D’s hash is lexicographically less than A’s. Sort-by-hash of `{A, D}` MUST assign local id `0` to **clock** (D) and local id `1` to **echo** (A).
+
 ### Upgrades
 
-A new version is a different content hash and therefore a **different identity**. A snapshot taken against v1 MUST NOT silently bind to v2. Restore MUST fail fast on hash mismatch.
+A new version is a different content hash and therefore a **different identity**. A snapshot taken against v1 MUST NOT silently bind to v2. Restore MUST fail fast on hash mismatch. Same package name with a different hash is a different identity.
+
+### Versioning (compatibility later)
+
+v0 encodings are the current development formats. They are versioned so a later freeze can keep them without dual decode paths:
+
+- TIRS `formatVersion`, container `containerVersion`, and identity `identityVersion` MUST be written as specified in this RFC (and RFC 0002). Decoders MUST reject unknown versions (fail closed). MUST NOT fall back to an older layout.
+- Restore MUST NOT bind a different `identityHash`.
+- Until a version is frozen as a published compatibility promise, a later RFC amendment MAY bump these fields. After freeze, a layout change MUST bump the corresponding version. There is no implicit `[0u8;32]` plugin identity and no reserved `pluginId`.
 
 ### Flow
 
@@ -828,7 +905,7 @@ This document has no IANA actions.
 | **Journal** | Ordered event log; source of truth for audit and replay |
 | **pluginId** | Dense local numeric handle assigned per instance after hashing and sorting (RFC 0002) |
 | **Plugin** | Host-provided capability exposed to guests via codegen; equal package, no reserved identifier |
-| **Plugin identity** | `SHA-256` of the canonical serialization of `(name + version + schema + metadata [+ optional implementation digest])` |
+| **Plugin identity** | `SHA-256` of the [v0 canonical identity bytes](#canonical-identity-bytes-v0) (`name`, `version`, `schema`, `metadata`, optional implementation digest) |
 | **Quota** | Multi-dimensional resource budget enforced by the runtime |
 | **Railguard** | Host policy limiting goal spawning or capabilities |
 | **Label** | Compact tag on a value (`Public` / `Internal` / `Confidential` / `Secret`) used for privacy policy |

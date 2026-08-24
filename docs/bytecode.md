@@ -1305,7 +1305,7 @@ RFC 0001 owns the on-disk AEAD/checksum **container** ([RFC 0001](architecture.m
 
 - `moduleBytes` (raw `.tirb`) and `entryExportName` (or equivalent `functionIndex` of the entry plus the name).
 - `activeContinuationIdentifier` (absent if no live continuation).
-- Plugin identity map: for each registered plugin, `{ pluginId, identityHash, name, version }` ([RFC 0001](architecture.md) §6, §11). `identityHash` is 32 opaque bytes; this spec does **not** define hash assignment.
+- Plugin identity map: for each registered plugin, `{ pluginId, identityHash, name, version }` ([RFC 0001](architecture.md) §6, §11). `identityHash` is 32 opaque bytes at the IR layer; assignment is RFC 0001 §6. Unknown TIRS `formatVersion` MUST fail closed.
 - Every live `Continuation`: `continuationIdentifier`, `valueStack`, `callFrames`.
 - Every `CallFrame`: `functionIndex`, `instructionIndex`, `locals`, `controlStack`, `returnProgramCounter`.
 - Every `ControlLabel` field listed in the abstract machine.
@@ -1402,7 +1402,7 @@ Round-trip MUST be deep-equal on all abstract fields. Implementations MAY use a 
 
 ### Complete TIRS hex — Echo suspend
 
-Canonical encoding of the [Echo worked example](#worked-example-echo) after `host.invoke` suspends, with `initialFuel = 1000` so `remainingFuel = 998`. Test identity hash is 32 zero bytes (fixtures only; not a content-hash algorithm). Module bytes are the Echo `.tirb` in [Worked binary: Echo host import (no memory)](#worked-binary-echo-host-import-no-memory).
+Canonical encoding of the [Echo worked example](#worked-example-echo) after `host.invoke` suspends, with `initialFuel = 1000` so `remainingFuel = 998`. `identityHash` is SHA-256 of the RFC 0001 v0 canonical identity bytes for package `Echo` version `1.0.0` schema `(schema Echo v1)` (no implementation digest). Module bytes are the Echo `.tirb` in [Worked binary: Echo host import (no memory)](#worked-binary-echo-host-import-no-memory).
 
 ```text
 54 49 52 53 01 00 00 00
@@ -1418,10 +1418,10 @@ Canonical encoding of the [Echo worked example](#worked-example-echo) after `hos
 04 00 00 00 6D 61 69 6E                         ; entryName "main"
 01 00 00 00                                     ; pluginIdentityCount 1
 00 00 00 00                                     ; pluginId 0
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ; identityHash (32 × 00)
+50 84 4C 2B CD 5A 84 FE 5B BB 6F 36 45 2B 62 CA
+33 D7 78 1B 7A 65 71 9F 06 1C 0A 60 B6 72 E0 49 ; identityHash (SHA-256)
 04 00 00 00 45 63 68 6F                         ; name "Echo"
-01 00 00 00 30                                  ; version "0"
+05 00 00 00 31 2E 30 2E 30                      ; version "1.0.0"
 E6 03 00 00 00 00 00 00                         ; remainingFuel 998
 00 00 00 00                                     ; memoryByteLength 0
 00 00 00 00                                     ; globalCount 0

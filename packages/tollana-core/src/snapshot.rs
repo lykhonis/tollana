@@ -566,10 +566,10 @@ mod tests {
 04 00 00 00 6D 61 69 6E
 01 00 00 00
 00 00 00 00
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+50 84 4C 2B CD 5A 84 FE 5B BB 6F 36 45 2B 62 CA
+33 D7 78 1B 7A 65 71 9F 06 1C 0A 60 B6 72 E0 49
 04 00 00 00 45 63 68 6F
-01 00 00 00 30
+05 00 00 00 31 2E 30 2E 30
 E6 03 00 00 00 00 00 00
 00 00 00 00
 00 00 00 00
@@ -608,8 +608,18 @@ E6 03 00 00 00 00 00 00
         assert_eq!(snap.module_bytes.len(), 128);
         assert_eq!(snap.plugin_identities.len(), 1);
         assert_eq!(snap.plugin_identities[0].name, "Echo");
-        assert_eq!(snap.plugin_identities[0].version, "0");
-        assert_eq!(snap.plugin_identities[0].identity_hash, [0u8; 32]);
+        assert_eq!(snap.plugin_identities[0].version, "1.0.0");
+        assert_eq!(
+            snap.plugin_identities[0].identity_hash,
+            crate::identity::hash_plugin_identity(&crate::identity::PluginIdentityInput {
+                name: "Echo",
+                version: "1.0.0",
+                schema: b"(schema Echo v1)",
+                metadata: b"",
+                implementation_digest: None,
+            })
+            .unwrap()
+        );
         assert_eq!(snap.active_continuation_identifier, Some(0));
         assert_eq!(snap.continuations.len(), 1);
         assert_eq!(snap.continuations[0].call_frames[0].instruction_index, 2);

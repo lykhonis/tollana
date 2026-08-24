@@ -14,7 +14,7 @@ use crate::snapshot::{
 };
 use crate::validate::validate;
 use crate::value::{CapHandle, Label, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 const VALUE_STACK_CAP: usize = 65536;
@@ -56,6 +56,12 @@ impl fmt::Display for HostInterfaceError {
 
 impl std::error::Error for HostInterfaceError {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginBinding {
+    pub identity: PluginIdentity,
+    pub methods: Vec<(u32, FunctionType)>,
+}
+
 pub struct RestoreResult {
     pub instance: Instance,
     pub plugin_state: Vec<PluginStateEntry>,
@@ -76,20 +82,53 @@ pub struct Instance {
 
 impl Instance {
     pub fn instantiate(module: Module) -> Result<Self, HostInterfaceError> {
-        Self::instantiate_with(module, HashSet::new(), Vec::new(), DEFAULT_MAX_PAGES)
+        Self::instantiate_with(module, &[], Vec::new(), DEFAULT_MAX_PAGES)
     }
 
     pub fn instantiate_with(
         module: Module,
-        plugins: HashSet<(u32, u32)>,
+        plugins: &[PluginBinding],
         host_injected_globals: Vec<Value>,
         max_pages: u32,
     ) -> Result<Self, HostInterfaceError> {
         validate(&module).map_err(|e| HostInterfaceError::Reject { message: e.message })?;
+        let mut by_id: HashMap<u32, &PluginBinding> = HashMap::new();
+        for binding in plugins {
+            if by_id.insert(binding.identity.plugin_id, binding).is_some() {
+                return Err(HostInterfaceError::Reject {
+                    message: format!("duplicate plugin {}", binding.identity.plugin_id),
+                });
+            }
+        }
+        let mut plugin_pairs = HashSet::new();
+        for binding in plugins {
+            for (method_id, _) in &binding.methods {
+                plugin_pairs.insert((binding.identity.plugin_id, *method_id));
+            }
+        }
         for imp in &module.host_imports {
-            if !plugins.contains(&(imp.plugin_id, imp.method_id)) {
+            if !plugin_pairs.contains(&(imp.plugin_id, imp.method_id)) {
                 return Err(HostInterfaceError::Reject {
                     message: format!("missing plugin {} {}", imp.plugin_id, imp.method_id),
+                });
+            }
+            let binding = by_id[&imp.plugin_id];
+            let Some((_, method_ty)) = binding
+                .methods
+                .iter()
+                .find(|(method_id, _)| *method_id == imp.method_id)
+            else {
+                return Err(HostInterfaceError::Reject {
+                    message: format!("missing plugin {} {}", imp.plugin_id, imp.method_id),
+                });
+            };
+            let import_ty = &module.types[imp.type_index as usize];
+            if method_ty != import_ty {
+                return Err(HostInterfaceError::Reject {
+                    message: format!(
+                        "plugin {} method {} type mismatch",
+                        imp.plugin_id, imp.method_id
+                    ),
                 });
             }
         }
@@ -138,12 +177,7 @@ impl Instance {
         let mut seen = HashSet::new();
         for imp in &module.host_imports {
             if seen.insert(imp.plugin_id) {
-                plugin_identities.push(PluginIdentity {
-                    plugin_id: imp.plugin_id,
-                    identity_hash: [0u8; 32],
-                    name: imp.name.clone(),
-                    version: "0".into(),
-                });
+                plugin_identities.push(by_id[&imp.plugin_id].identity.clone());
             }
         }
         let machine = MachineState {
@@ -159,7 +193,7 @@ impl Instance {
         Ok(Self {
             module,
             machine,
-            plugins,
+            plugins: plugin_pairs,
             plugin_identities,
             entry_export_name: "main".into(),
             last_outcome: None,
@@ -1249,8 +1283,9 @@ fn rem_i64(lhs: i64, rhs: i64) -> Result<i64, TrapKind> {
 mod tests {
     use super::*;
     use crate::decode::decode_text;
-    use crate::value::{CapHandle, Label};
-    use std::collections::HashSet;
+    use crate::identity::{assign_local_ids, hash_plugin_identity, PluginIdentityInput};
+    use crate::value::{CapHandle, Label, ValueType};
+    use std::collections::HashMap;
 
     fn run(src: &str, fuel: u64) -> (Instance, ExecOutcome) {
         let module = decode_text(src).expect("decode");
@@ -1636,21 +1671,76 @@ mod tests {
         }
     }
 
-    fn with_echo(src: &str) -> Instance {
-        let module = decode_text(src).unwrap();
-        let mut plugins = HashSet::new();
-        plugins.insert((0, 0));
-        Instance::instantiate_with(module, plugins, Vec::new(), 16).unwrap()
+    fn package_identity(name: &str, plugin_id: u32) -> PluginIdentity {
+        let schema = format!("(schema {name} v1)");
+        let hash = hash_plugin_identity(&PluginIdentityInput {
+            name,
+            version: "1.0.0",
+            schema: schema.as_bytes(),
+            metadata: b"",
+            implementation_digest: None,
+        })
+        .unwrap();
+        PluginIdentity {
+            plugin_id,
+            identity_hash: hash,
+            name: name.to_string(),
+            version: "1.0.0".into(),
+        }
     }
 
-    fn echo_rebind() -> HostRebind {
-        HostRebind {
-            plugin_id: 0,
-            identity_hash: [0u8; 32],
-            name: "Echo".into(),
-            version: "0".into(),
-            methods: vec![(0, 0)],
+    fn fixture_bindings(module: &Module) -> Vec<PluginBinding> {
+        let mut order = Vec::new();
+        let mut methods: HashMap<u32, Vec<(u32, FunctionType)>> = HashMap::new();
+        let mut names: HashMap<u32, String> = HashMap::new();
+        for imp in &module.host_imports {
+            if names.insert(imp.plugin_id, imp.name.clone()).is_none() {
+                order.push(imp.plugin_id);
+            }
+            let ty = module.types[imp.type_index as usize].clone();
+            methods
+                .entry(imp.plugin_id)
+                .or_default()
+                .push((imp.method_id, ty));
         }
+        order
+            .into_iter()
+            .map(|plugin_id| PluginBinding {
+                identity: package_identity(&names[&plugin_id], plugin_id),
+                methods: methods.remove(&plugin_id).unwrap(),
+            })
+            .collect()
+    }
+
+    fn with_echo(src: &str) -> Instance {
+        let module = decode_text(src).unwrap();
+        let plugins = fixture_bindings(&module);
+        Instance::instantiate_with(module, &plugins, Vec::new(), 16).unwrap()
+    }
+
+    fn i32_method() -> FunctionType {
+        FunctionType {
+            parameters: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        }
+    }
+
+    fn rebind_from(inst: &Instance) -> Vec<HostRebind> {
+        inst.plugin_identities
+            .iter()
+            .map(|id| HostRebind {
+                plugin_id: id.plugin_id,
+                identity_hash: id.identity_hash,
+                name: id.name.clone(),
+                version: id.version.clone(),
+                methods: inst
+                    .plugins
+                    .iter()
+                    .copied()
+                    .filter(|(plugin_id, _)| *plugin_id == id.plugin_id)
+                    .collect(),
+            })
+            .collect()
     }
 
     #[test]
@@ -1796,6 +1886,9 @@ mod tests {
         assert_eq!(again, snap);
         assert_eq!(snap.remaining_fuel, 998);
         assert_eq!(snap.continuations[0].call_frames[0].instruction_index, 2);
+        assert_ne!(snap.plugin_identities[0].identity_hash, [0u8; 32]);
+        assert_eq!(snap.plugin_identities[0].name, "Echo");
+        assert_eq!(snap.plugin_identities[0].version, "1.0.0");
     }
 
     #[test]
@@ -1834,8 +1927,9 @@ mod tests {
         assert_eq!(call.arguments, vec![Value::i32(41, Label::Public)]);
         assert_eq!(snap.linear_memory.len(), 0);
         assert!(snap.capability_table.is_empty());
+        let rebind = rebind_from(&inst);
         drop(inst);
-        let mut restored = Instance::restore_core(snap, &[echo_rebind()]).unwrap();
+        let mut restored = Instance::restore_core(snap, &rebind).unwrap();
         assert_eq!(restored.machine.remaining_fuel, 998);
         let out = restored
             .resume(vec![Value::i32(41, Label::Public)])
@@ -1868,8 +1962,9 @@ mod tests {
         let fuel = inst.machine.remaining_fuel;
         let bytes = inst.snapshot(Vec::new(), 0);
         assert_eq!(inst.machine.remaining_fuel, fuel);
+        let rebind = rebind_from(&inst);
         drop(inst);
-        let restored = Instance::restore(&bytes, &[echo_rebind()], None).unwrap();
+        let restored = Instance::restore(&bytes, &rebind, None).unwrap();
         assert!(restored.plugin_state.is_empty());
         assert_eq!(restored.journal_cursor, 0);
         let mut inst = restored.instance;
@@ -1901,7 +1996,8 @@ mod tests {
         let mut bytes = inst.snapshot(Vec::new(), 0);
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;
-        match Instance::restore(&bytes, &[echo_rebind()], None) {
+        let rebind = rebind_from(&inst);
+        match Instance::restore(&bytes, &rebind, None) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(
                     message.contains("checksum")
@@ -1933,13 +2029,14 @@ mod tests {
         let key = [0x11u8; 32];
         let nonce = [0x22u8; 12];
         let bytes = inst.snapshot_aead(Vec::new(), 0, &key, &nonce).unwrap();
+        let rebind = rebind_from(&inst);
         drop(inst);
-        match Instance::restore(&bytes, &[echo_rebind()], Some(&[0x33u8; 32])) {
+        match Instance::restore(&bytes, &rebind, Some(&[0x33u8; 32])) {
             Err(HostInterfaceError::Reject { .. }) => {}
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("expected reject"),
         }
-        let restored = Instance::restore(&bytes, &[echo_rebind()], Some(&key)).unwrap();
+        let restored = Instance::restore(&bytes, &rebind, Some(&key)).unwrap();
         let mut inst = restored.instance;
         let out = inst.resume(vec![Value::i32(41, Label::Public)]).unwrap();
         match out {
@@ -1966,9 +2063,9 @@ mod tests {
         let mut inst = with_echo(src);
         let _ = inst.invoke("main", &[], 1000).unwrap();
         let snap = inst.snapshot_core();
-        let mut rebind = echo_rebind();
-        rebind.identity_hash[0] = 1;
-        match Instance::restore_core(snap, &[rebind]) {
+        let mut rebind = rebind_from(&inst);
+        rebind[0].identity_hash[0] ^= 0xff;
+        match Instance::restore_core(snap, &rebind) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(message.contains("identity"));
             }
@@ -1997,14 +2094,194 @@ mod tests {
         inst.grant_cap(handle, b"echo-cap".to_vec());
         let cap = Value::capability(handle, Label::Confidential);
         let _ = inst.invoke("main", &[cap], 1000).unwrap();
+        let rebind = rebind_from(&inst);
         let mut snap = inst.snapshot_core();
         snap.capability_table[0].generation = 2;
-        match Instance::restore_core(snap, &[echo_rebind()]) {
+        match Instance::restore_core(snap, &rebind) {
             Err(HostInterfaceError::Reject { message }) => {
                 assert!(message.contains("capability"));
             }
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn instantiate_rejects_missing_plugin_binding() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let module = decode_text(src).unwrap();
+        match Instance::instantiate_with(module, &[], Vec::new(), 16) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(message.contains("missing plugin"));
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn instantiate_rejects_method_type_mismatch() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 0)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let module = decode_text(src).unwrap();
+        let plugins = [PluginBinding {
+            identity: package_identity("Echo", 0),
+            methods: vec![(
+                0,
+                FunctionType {
+                    parameters: vec![ValueType::I64],
+                    results: vec![ValueType::I32],
+                },
+            )],
+        }];
+        match Instance::instantiate_with(module, &plugins, Vec::new(), 16) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(message.contains("type mismatch"));
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn instantiate_does_not_renumber_plugin_ids() {
+        let src = r#"
+(module
+  (host.import Echo
+    (pluginId 7)
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#;
+        let module = decode_text(src).unwrap();
+        let plugins = fixture_bindings(&module);
+        let inst = Instance::instantiate_with(module, &plugins, Vec::new(), 16).unwrap();
+        let snap = inst.snapshot_core();
+        assert_eq!(snap.plugin_identities[0].plugin_id, 7);
+        assert_ne!(snap.plugin_identities[0].identity_hash, [0u8; 32]);
+        assert_eq!(snap.plugin_identities[0].name, "Echo");
+        assert_eq!(snap.plugin_identities[0].version, "1.0.0");
+    }
+
+    #[test]
+    fn two_package_sort_by_hash_restore_rejects_v2() {
+        let echo = PluginIdentityInput {
+            name: "echo",
+            version: "1.0.0",
+            schema: b"(schema echo v1)",
+            metadata: b"",
+            implementation_digest: None,
+        };
+        let echo_v2 = PluginIdentityInput {
+            version: "2.0.0",
+            ..echo
+        };
+        let clock = PluginIdentityInput {
+            name: "clock",
+            version: "1.0.0",
+            schema: b"(schema clock v1)",
+            metadata: b"",
+            implementation_digest: None,
+        };
+        let echo_hash = hash_plugin_identity(&echo).unwrap();
+        let echo_v2_hash = hash_plugin_identity(&echo_v2).unwrap();
+        let clock_hash = hash_plugin_identity(&clock).unwrap();
+        let ids = assign_local_ids(&[echo_hash, clock_hash]).unwrap();
+        assert_eq!(ids, [1, 0]);
+        let echo_id = ids[0];
+        let clock_id = ids[1];
+        let src = format!(
+            r#"
+(module
+  (host.import Echo
+    (pluginId {echo_id})
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (host.import Clock
+    (pluginId {clock_id})
+    (methodId 0)
+    (param i32)
+    (result i32))
+  (func (export "main") (result i32)
+    (host.invoke Echo (i32.const 41))))
+"#
+        );
+        let module = decode_text(&src).unwrap();
+        let plugins = [
+            PluginBinding {
+                identity: PluginIdentity {
+                    plugin_id: echo_id,
+                    identity_hash: echo_hash,
+                    name: "echo".into(),
+                    version: "1.0.0".into(),
+                },
+                methods: vec![(0, i32_method())],
+            },
+            PluginBinding {
+                identity: PluginIdentity {
+                    plugin_id: clock_id,
+                    identity_hash: clock_hash,
+                    name: "clock".into(),
+                    version: "1.0.0".into(),
+                },
+                methods: vec![(0, i32_method())],
+            },
+        ];
+        let mut inst = Instance::instantiate_with(module, &plugins, Vec::new(), 16).unwrap();
+        let snap = inst.snapshot_core();
+        assert_eq!(snap.plugin_identities.len(), 2);
+        assert_eq!(snap.plugin_identities[0].plugin_id, echo_id);
+        assert_eq!(snap.plugin_identities[0].identity_hash, echo_hash);
+        assert_eq!(snap.plugin_identities[1].plugin_id, clock_id);
+        assert_eq!(snap.plugin_identities[1].identity_hash, clock_hash);
+        let _ = inst.invoke("main", &[], 1000).unwrap();
+        let snap = inst.snapshot_core();
+        let matching = [
+            HostRebind {
+                plugin_id: echo_id,
+                identity_hash: echo_hash,
+                name: "echo".into(),
+                version: "1.0.0".into(),
+                methods: vec![(echo_id, 0)],
+            },
+            HostRebind {
+                plugin_id: clock_id,
+                identity_hash: clock_hash,
+                name: "clock".into(),
+                version: "1.0.0".into(),
+                methods: vec![(clock_id, 0)],
+            },
+        ];
+        Instance::restore_core(snap.clone(), &matching).expect("matching hashes restore");
+        let mut rebound = matching.clone();
+        rebound[0].identity_hash = echo_v2_hash;
+        rebound[0].version = "2.0.0".into();
+        match Instance::restore_core(snap, &rebound) {
+            Err(HostInterfaceError::Reject { message }) => {
+                assert!(message.contains("identity"));
+            }
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("expected reject of echo v2"),
         }
     }
 }
