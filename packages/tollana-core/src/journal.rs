@@ -112,6 +112,24 @@ pub enum JournalEventKind {
         continuation_id: u32,
         allowed_count: u32,
     },
+    AiCall {
+        model: String,
+        method_id: u32,
+        prompt_label: Label,
+        tokens_in: u64,
+        tokens_out: u64,
+        latency_millis: u64,
+    },
+    AiDenied {
+        reason: String,
+    },
+    ContextListed {
+        count: u32,
+    },
+    ContextRead {
+        resource_id: u32,
+        label: Label,
+    },
 }
 
 impl JournalEventKind {
@@ -138,6 +156,10 @@ impl JournalEventKind {
             Self::GoalCancelled { .. } => "GoalCancelled",
             Self::GoalDenied { .. } => "GoalDenied",
             Self::CapabilityAttenuated { .. } => "CapabilityAttenuated",
+            Self::AiCall { .. } => "AiCall",
+            Self::AiDenied { .. } => "AiDenied",
+            Self::ContextListed { .. } => "ContextListed",
+            Self::ContextRead { .. } => "ContextRead",
         }
     }
 

@@ -4,6 +4,8 @@ use tollana_core::{FunctionType, ValueType};
 
 pub const CLOCK_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/clock.json");
 pub const GOAL_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/goal.json");
+pub const AI_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/ai.json");
+pub const CONTEXT_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/context.json");
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PackageSchema {
@@ -83,5 +85,32 @@ mod tests {
         assert_eq!(schema.methods[1].name, "join");
         assert_eq!(schema.methods[2].name, "cancel");
         assert_eq!(schema.methods[2].results, ["unit"]);
+    }
+
+    #[test]
+    fn ai_schema_fixture_parses() {
+        let schema = parse_package_schema(AI_SCHEMA_BYTES).unwrap();
+        assert_eq!(schema.name, "ai");
+        assert_eq!(schema.version, "1.0.0");
+        assert_eq!(schema.methods.len(), 3);
+        assert_eq!(schema.methods[0].id, 0);
+        assert_eq!(schema.methods[0].name, "chat");
+        assert_eq!(schema.methods[0].params, ["i32"]);
+        assert_eq!(schema.methods[0].results, ["i32"]);
+        assert_eq!(schema.methods[0].capabilities, ["ai.chat"]);
+        assert_eq!(schema.methods[1].name, "generate");
+        assert_eq!(schema.methods[2].name, "embed");
+    }
+
+    #[test]
+    fn context_schema_fixture_parses() {
+        let schema = parse_package_schema(CONTEXT_SCHEMA_BYTES).unwrap();
+        assert_eq!(schema.name, "context");
+        assert_eq!(schema.methods.len(), 2);
+        assert_eq!(schema.methods[0].name, "list");
+        assert!(schema.methods[0].params.is_empty());
+        assert_eq!(schema.methods[1].name, "read");
+        assert_eq!(schema.methods[1].params, ["i32"]);
+        assert_eq!(schema.methods[1].capabilities, ["context.read"]);
     }
 }

@@ -556,6 +556,12 @@ Notes:
 - Resources may be passed explicitly into `ai.chat` / `ai.generate`, or auto-attached by host policy
 - Resources can carry sensitivity labels that constrain how they may be used
 
+v0 representation: `ai` and `context` are **equal packages** (well-known **names** only; no reserved `pluginId`). Guest methods use IR `Value`s (`i32` prompts, resource ids, and replies). URI strings and model names stay host-side in the package. A recorded or local stub is a valid gateway; swapping the implementation MUST NOT require a guest module change when identity (name, version, schema) is unchanged.
+
+v0 `ai` methods: `chat`, `generate`, `embed` (each `i32 → i32`). The host MAY mark a gateway **external**. An external gateway MUST refuse arguments whose `Label` is `Confidential` or `Secret` (journal `AiDenied`). Local gateways MAY accept those labels. Token use MAY `ConsumeQuota(Tokens)`.
+
+v0 `context` methods: `list` (`→ i32` count) and `read` (`i32 → i32`). The host inserts URI-addressable resources with a sensitivity label; `read` returns a `Value` that carries that label. Full MCP `watch` / multi-server aggregation is out of v0.
+
 ---
 
 ## 11. Snapshots, Time-Travel, and Replay
@@ -764,6 +770,10 @@ body:         event-specific fields (in-process; not a file layout)
 | `GoalCancelled` | host cancelled a goal (and MAY cancel descendants) | `goal_id` |
 | `GoalDenied` | railguard or quota rejected spawn | reason (`max_depth`, `max_concurrent`, `max_children`, `approval`, `concurrent_goals_quota`, …) |
 | `CapabilityAttenuated` | child capability set is a subset of the parent’s | `continuation_id`, allowed-handle count |
+| `AiCall` | `ai` package accepted a model call | model name, method, prompt label, tokens in/out, latency millis |
+| `AiDenied` | external/label or quota policy refused a call | reason (`external_confidential`, `tokens_quota`, …) |
+| `ContextListed` | `context.list` | resource count |
+| `ContextRead` | `context.read` | `resource_id`, resource label |
 
 A byte-level `snapshot` / `restore` MUST emit `SnapshotCoreTaken` / `SnapshotCoreRestored` because it calls `SnapshotCore` / `RestoreCore`.
 

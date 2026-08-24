@@ -1,0 +1,27 @@
+{
+  "name": "ai",
+  "version": "1.0.0",
+  "methods": [
+    {
+      "id": 0,
+      "name": "chat",
+      "params": ["i32"],
+      "results": ["i32"],
+      "capabilities": ["ai.chat"]
+    },
+    {
+      "id": 1,
+      "name": "generate",
+      "params": ["i32"],
+      "results": ["i32"],
+      "capabilities": ["ai.generate"]
+    },
+    {
+      "id": 2,
+      "name": "embed",
+      "params": ["i32"],
+      "results": ["i32"],
+      "capabilities": ["ai.embed"]
+    }
+  ]
+}
