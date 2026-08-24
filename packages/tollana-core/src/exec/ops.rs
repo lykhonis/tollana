@@ -525,6 +525,7 @@ impl Instance {
             JournalEventKind::HostCallSuspended {
                 plugin_id,
                 method_id,
+                continuation_identifier,
                 arity: journal_args.len() as u32,
                 arguments: journal_args,
             },

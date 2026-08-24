@@ -1922,8 +1922,8 @@ The journal is architecture-owned. The interpreter SHOULD emit these IR-level ev
 | `QuotaConsumed` | dimension, amount, remaining after |
 | `QuotaExhausted` | dimension, `ProgramCounter` |
 | `QuotaAdded` | dimension, remaining after |
-| `HostCallSuspended` | `HostCall` identifiers and arity (redact payloads per label policy) |
-| `HostCallResumed` | result `ValueType` + label (payload redaction host-defined) |
+| `HostCallSuspended` | `pluginId`, `methodId`, `continuationIdentifier`, arity, argument `Value`s (redact payloads per label policy) |
+| `HostCallResumed` | `pluginId`, `methodId`, `continuationIdentifier`, result `Value`s (payload redaction host-defined) |
 | `Trapped` | `TrapKind`, `ProgramCounter` |
 | `Completed` | result types and labels |
 | `SnapshotCoreTaken` | module length, fuel, memory length, continuation count |
@@ -1932,7 +1932,7 @@ The journal is architecture-owned. The interpreter SHOULD emit these IR-level ev
 
 `Confidential` / `Secret` payloads MUST NOT be written to unrestricted logs. Hosts MUST apply redaction ([RFC 0001](architecture.md) §13).
 
-The v0 **event envelope** (`sequence`, `run_id`, `sensitivity`, `event_type`, body), default-off `InstructionStepped`, container `journalCursor` as an advisory next-sequence, and architecture-level `SnapshotTaken` / `SnapshotRestored` are specified in [RFC 0001 §13](architecture.md#journal-v0-envelope-in-process). This RFC names the IR-level events only.
+The v0 **event envelope** (`sequence`, `run_id`, `sensitivity`, `event_type`, body), default-off `InstructionStepped`, container `journalCursor` as an advisory next-sequence, architecture-level `SnapshotTaken` / `SnapshotRestored`, and `HostCallFailed` (plugin `invoke` error; the interpreter MUST NOT emit it) are specified in [RFC 0001 §13](architecture.md#journal-v0-envelope-in-process). This RFC names the IR-level events only.
 
 ---
 

@@ -55,11 +55,21 @@ pub enum JournalEventKind {
     HostCallSuspended {
         plugin_id: u32,
         method_id: u32,
+        continuation_identifier: u32,
         arity: u32,
         arguments: Vec<JournalValue>,
     },
     HostCallResumed {
+        plugin_id: u32,
+        method_id: u32,
+        continuation_identifier: u32,
         results: Vec<JournalValue>,
+    },
+    HostCallFailed {
+        plugin_id: u32,
+        method_id: u32,
+        continuation_identifier: u32,
+        message: String,
     },
     Trapped {
         trap_kind: TrapKind,
@@ -93,43 +103,6 @@ pub enum JournalEventKind {
     InstanceCreated {
         plugins: Vec<PluginIdentity>,
     },
-    GoalSpawned {
-        goal_id: u32,
-        parent_goal_id: Option<u32>,
-        continuation_id: u32,
-        depth: u32,
-    },
-    GoalCompleted {
-        goal_id: u32,
-    },
-    GoalCancelled {
-        goal_id: u32,
-    },
-    GoalDenied {
-        reason: String,
-    },
-    CapabilityAttenuated {
-        continuation_id: u32,
-        allowed_count: u32,
-    },
-    AiCall {
-        model: String,
-        method_id: u32,
-        prompt_label: Label,
-        tokens_in: u64,
-        tokens_out: u64,
-        latency_millis: u64,
-    },
-    AiDenied {
-        reason: String,
-    },
-    ContextListed {
-        count: u32,
-    },
-    ContextRead {
-        resource_id: u32,
-        label: Label,
-    },
 }
 
 impl JournalEventKind {
@@ -143,6 +116,7 @@ impl JournalEventKind {
             Self::QuotaAdded { .. } => "QuotaAdded",
             Self::HostCallSuspended { .. } => "HostCallSuspended",
             Self::HostCallResumed { .. } => "HostCallResumed",
+            Self::HostCallFailed { .. } => "HostCallFailed",
             Self::Trapped { .. } => "Trapped",
             Self::Completed { .. } => "Completed",
             Self::SnapshotCoreTaken { .. } => "SnapshotCoreTaken",
@@ -151,15 +125,6 @@ impl JournalEventKind {
             Self::SnapshotRestored { .. } => "SnapshotRestored",
             Self::InvalidCapabilityUse { .. } => "InvalidCapabilityUse",
             Self::InstanceCreated { .. } => "InstanceCreated",
-            Self::GoalSpawned { .. } => "GoalSpawned",
-            Self::GoalCompleted { .. } => "GoalCompleted",
-            Self::GoalCancelled { .. } => "GoalCancelled",
-            Self::GoalDenied { .. } => "GoalDenied",
-            Self::CapabilityAttenuated { .. } => "CapabilityAttenuated",
-            Self::AiCall { .. } => "AiCall",
-            Self::AiDenied { .. } => "AiDenied",
-            Self::ContextListed { .. } => "ContextListed",
-            Self::ContextRead { .. } => "ContextRead",
         }
     }
 
@@ -168,15 +133,25 @@ impl JournalEventKind {
             Self::HostCallSuspended {
                 plugin_id,
                 method_id,
+                continuation_identifier,
                 arity,
                 arguments,
             } => Self::HostCallSuspended {
                 plugin_id,
                 method_id,
+                continuation_identifier,
                 arity,
                 arguments: redact_values(arguments),
             },
-            Self::HostCallResumed { results } => Self::HostCallResumed {
+            Self::HostCallResumed {
+                plugin_id,
+                method_id,
+                continuation_identifier,
+                results,
+            } => Self::HostCallResumed {
+                plugin_id,
+                method_id,
+                continuation_identifier,
                 results: redact_values(results),
             },
             Self::Completed { results } => Self::Completed {
@@ -266,10 +241,28 @@ mod tests {
     use crate::value::Value;
 
     #[test]
+    fn host_call_failed_is_named() {
+        let mut j = MemoryJournal::new();
+        j.append(
+            JournalEventKind::HostCallFailed {
+                plugin_id: 1,
+                method_id: 2,
+                continuation_identifier: 0,
+                message: "external_confidential".into(),
+            },
+            Label::Public,
+        );
+        assert_eq!(j.event_names(), ["HostCallFailed"]);
+    }
+
+    #[test]
     fn default_sink_redacts_secret_payload() {
         let mut j = MemoryJournal::new();
         j.append(
             JournalEventKind::HostCallResumed {
+                plugin_id: 0,
+                method_id: 0,
+                continuation_identifier: 0,
                 results: vec![JournalValue::from_value(
                     &Value::i32(41, Label::Secret),
                     false,
@@ -278,7 +271,7 @@ mod tests {
             Label::Secret,
         );
         match &j.events[0].kind {
-            JournalEventKind::HostCallResumed { results } => {
+            JournalEventKind::HostCallResumed { results, .. } => {
                 assert_eq!(results[0].label, Label::Secret);
                 assert_eq!(results[0].payload, None);
             }

@@ -2,7 +2,7 @@ use crate::error::HostError;
 use crate::plugin::{Plugin, PluginContext, PluginResult};
 use crate::schema::{function_type, parse_package_schema, CONTEXT_SCHEMA_BYTES};
 use std::collections::BTreeMap;
-use tollana_core::{CapHandle, FunctionType, JournalEventKind, Label, Value};
+use tollana_core::{CapHandle, FunctionType, Label, Value};
 
 pub const METHOD_LIST: u32 = 0;
 pub const METHOD_READ: u32 = 1;
@@ -82,7 +82,7 @@ impl Plugin for Context {
         method_id: u32,
         args: &[Value],
         _caps: &[CapHandle],
-        ctx: &mut dyn PluginContext,
+        _ctx: &mut dyn PluginContext,
     ) -> Result<PluginResult, HostError> {
         match method_id {
             METHOD_LIST => {
@@ -90,7 +90,6 @@ impl Plugin for Context {
                     return Err(HostError::new("context.list takes no arguments"));
                 }
                 let count = self.resources.len() as u32;
-                ctx.emit(JournalEventKind::ContextListed { count });
                 Ok(PluginResult::Immediate(vec![Value::i32(
                     count as i32,
                     Label::Public,
@@ -108,10 +107,6 @@ impl Plugin for Context {
                     .resources
                     .get(&(id as u32))
                     .ok_or_else(|| HostError::new("unknown context resource"))?;
-                ctx.emit(JournalEventKind::ContextRead {
-                    resource_id: id as u32,
-                    label: resource.label,
-                });
                 Ok(PluginResult::Immediate(vec![Value::i32(
                     resource.payload,
                     resource.label,
@@ -231,8 +226,8 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let names = host.instance().unwrap().journal.event_names();
-        assert!(names.contains(&"ContextListed"));
-        assert!(names.contains(&"ContextRead"));
+        assert!(names.contains(&"HostCallSuspended"));
+        assert!(names.contains(&"HostCallResumed"));
     }
 
     #[test]

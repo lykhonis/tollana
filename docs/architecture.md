@@ -558,7 +558,7 @@ Notes:
 
 v0 representation: `ai` and `context` are **equal packages** (well-known **names** only; no reserved `pluginId`). Guest methods use IR `Value`s (`i32` prompts, resource ids, and replies). URI strings and model names stay host-side in the package. A recorded or local stub is a valid gateway; swapping the implementation MUST NOT require a guest module change when identity (name, version, schema) is unchanged.
 
-v0 `ai` methods: `chat`, `generate`, `embed` (each `i32 → i32`). The host MAY mark a gateway **external**. An external gateway MUST refuse arguments whose `Label` is `Confidential` or `Secret` (journal `AiDenied`). Local gateways MAY accept those labels. Token use MAY `ConsumeQuota(Tokens)`.
+v0 `ai` methods: `chat`, `generate`, `embed` (each `i32 → i32`). The host MAY mark a gateway **external**. An external gateway MUST refuse arguments whose `Label` is `Confidential` or `Secret`. Local gateways MAY accept those labels. Token use MAY `ConsumeQuota(Tokens)`. The call is journaled only as `HostCallSuspended` / `HostCallResumed` (or a host-interface error with no resume).
 
 v0 `context` methods: `list` (`→ i32` count) and `read` (`i32 → i32`). The host inserts URI-addressable resources with a sensitivity label; `read` returns a `Value` that carries that label. Full MCP `watch` / multi-server aggregation is out of v0.
 
@@ -712,15 +712,11 @@ The journal is a dense, ordered event log. Derived views (metrics, traces, UI) b
 
 Automatically recorded (non-exhaustive):
 
-- Goal lifecycle (start, end, status, parent/child)
-- AI calls (model, tokens, latency, cost estimates)
-- Isolated code execution (source or hash, inputs, result, metrics, denials)
-- Context reads / watches
-- FS and network operations (when those plugins are enabled)
+- Host calls, journaled automatically by the interpreter/host (plugins MUST NOT emit events): `HostCallSuspended` on `host.invoke`; `HostCallResumed` on successful `Resume` (result `Value`s); `HostCallFailed` when plugin `invoke` returns an error (generic message, not a result `Value`). Each carries `pluginId`, `methodId`, `continuationIdentifier`. Plugins are third-party; the journal MUST NOT grow named events per package or method.
+- Isolated code execution (source or hash, inputs, result, metrics, denials) as host calls of that package
 - Quota consumption
-- Capability grants, attenuations, and denials
 - Plugin identity (hash, name, version) at instance creation and restore
-- Snapshots, restores, errors, cancellations
+- Snapshots, restores, traps, fuel, cancellations of continuations
 
 **Correlation IDs:** `run_id` → `goal_id` → `parent_goal_id` → `ai_call_id` → …
 
@@ -750,8 +746,8 @@ body:         event-specific fields (in-process; not a file layout)
 | `QuotaConsumed` | a quota slot is decremented | dimension code, amount, remaining after |
 | `QuotaExhausted` | guest suspends `QuotaExhausted` | dimension code, `ProgramCounter` |
 | `QuotaAdded` | Host `AddQuota` | dimension code, remaining after |
-| `HostCallSuspended` | `host.invoke` suspend | `pluginId`, `methodId`, arity; argument types/labels; payloads redacted per policy |
-| `HostCallResumed` | successful `Resume` | result types/labels; payloads redacted per policy |
+| `HostCallSuspended` | `host.invoke` suspend | `pluginId`, `methodId`, `continuationIdentifier`, arity; argument types/labels; payloads redacted per policy |
+| `HostCallResumed` | successful `Resume` | `pluginId`, `methodId`, `continuationIdentifier`; result types/labels; payloads redacted per policy |
 | `Trapped` | guest trap | `TrapKind`, `ProgramCounter` |
 | `Completed` | guest returns from entry | result types/labels; payloads redacted per policy |
 | `SnapshotCoreTaken` | `SnapshotCore` (including when the container path calls it) | module length, fuel, memory length, continuation count |
@@ -765,15 +761,7 @@ body:         event-specific fields (in-process; not a file layout)
 |--------------|------|----------------|
 | `SnapshotTaken` | byte `snapshot` / `snapshot_aead` after TIRS is encoded | `journalCursor` written into the container |
 | `SnapshotRestored` | byte `restore` after `RestoreCore` | `journalCursor` read from the container |
-| `GoalSpawned` | `goal` package accepted a child spawn | `goal_id`, optional `parent_goal_id`, `continuation_id`, `depth` |
-| `GoalCompleted` | a spawned goal’s continuation returned | `goal_id` |
-| `GoalCancelled` | host cancelled a goal (and MAY cancel descendants) | `goal_id` |
-| `GoalDenied` | railguard or quota rejected spawn | reason (`max_depth`, `max_concurrent`, `max_children`, `approval`, `concurrent_goals_quota`, …) |
-| `CapabilityAttenuated` | child capability set is a subset of the parent’s | `continuation_id`, allowed-handle count |
-| `AiCall` | `ai` package accepted a model call | model name, method, prompt label, tokens in/out, latency millis |
-| `AiDenied` | external/label or quota policy refused a call | reason (`external_confidential`, `tokens_quota`, …) |
-| `ContextListed` | `context.list` | resource count |
-| `ContextRead` | `context.read` | `resource_id`, resource label |
+| `HostCallFailed` | host dispatch: `Plugin::invoke` returned an error | `pluginId`, `methodId`, `continuationIdentifier`, message |
 
 A byte-level `snapshot` / `restore` MUST emit `SnapshotCoreTaken` / `SnapshotCoreRestored` because it calls `SnapshotCore` / `RestoreCore`.
 
@@ -864,7 +852,7 @@ Values may carry a compact sensitivity tag: `public | internal | confidential | 
 - Goal trees can further attenuate capabilities for children.
 - Isolated generated-code children start from the intersection of passed capabilities and a host allow-list that is normally empty.
 - Quotas and railguards act as additional isolation and DoS-prevention layers.
-- The journal records capability-related events (grants, denials, attenuations) for audit.
+- Capability use is journaled as `InvalidCapabilityUse` or as the host call that carried the handle (`HostCallSuspended` / `HostCallFailed`).
 
 ### Design rules that keep the core pure
 

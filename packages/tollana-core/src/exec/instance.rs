@@ -408,6 +408,9 @@ impl Instance {
         }
         self.emit(
             JournalEventKind::HostCallResumed {
+                plugin_id: pending.plugin_id,
+                method_id: pending.method_id,
+                continuation_identifier,
                 results: journal_results,
             },
             sensitivity,

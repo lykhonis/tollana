@@ -2,9 +2,7 @@ use crate::error::HostError;
 use crate::plugin::{Plugin, PluginContext, PluginResult};
 use crate::schema::{function_type, parse_package_schema, GOAL_SCHEMA_BYTES};
 use std::collections::HashMap;
-use tollana_core::{
-    CapHandle, ExecOutcome, FunctionType, JournalEventKind, Label, QuotaDimension, Value,
-};
+use tollana_core::{CapHandle, ExecOutcome, FunctionType, Label, QuotaDimension, Value};
 
 pub const METHOD_SPAWN: u32 = 0;
 pub const METHOD_JOIN: u32 = 1;
@@ -63,7 +61,6 @@ pub struct Goal {
     next_id: u32,
     now_millis: u64,
     pending_releases: u64,
-    pending_events: Vec<JournalEventKind>,
 }
 
 impl Default for Goal {
@@ -81,7 +78,6 @@ impl Goal {
             next_id: 1,
             now_millis: 0,
             pending_releases: 0,
-            pending_events: Vec::new(),
         }
     }
 
@@ -139,10 +135,7 @@ impl Goal {
         Ok(id)
     }
 
-    fn deny(ctx: &mut dyn PluginContext, reason: &str) -> Result<PluginResult, HostError> {
-        ctx.emit(JournalEventKind::GoalDenied {
-            reason: reason.to_string(),
-        });
+    fn deny(reason: &str) -> Result<PluginResult, HostError> {
         Err(HostError::new(reason))
     }
 
@@ -152,7 +145,7 @@ impl Goal {
         ctx: &mut dyn PluginContext,
     ) -> Result<PluginResult, HostError> {
         if function_index < 0 {
-            return Self::deny(ctx, "invalid_function");
+            return Self::deny("invalid_function");
         }
         let caller = ctx.caller_continuation();
         let live = ctx.live_capabilities();
@@ -160,21 +153,21 @@ impl Goal {
         let parent_depth = self.nodes[&parent_id].depth;
         let child_depth = parent_depth + 1;
         if child_depth > self.railguards.max_depth {
-            return Self::deny(ctx, "max_depth");
+            return Self::deny("max_depth");
         }
         if self
             .railguards
             .approval_beyond_depth
             .is_some_and(|d| child_depth > d)
         {
-            return Self::deny(ctx, "approval");
+            return Self::deny("approval");
         }
         let child_count = self.nodes[&parent_id].children.len() as u32;
         if child_count >= self.railguards.max_children {
-            return Self::deny(ctx, "max_children");
+            return Self::deny("max_children");
         }
         if self.running_children() as u32 >= self.railguards.max_concurrent {
-            return Self::deny(ctx, "max_concurrent");
+            return Self::deny("max_concurrent");
         }
         let mut charged = false;
         if ctx
@@ -182,7 +175,7 @@ impl Goal {
             .is_some()
         {
             if !ctx.consume_quota(QuotaDimension::ConcurrentGoals, 1) {
-                return Self::deny(ctx, "concurrent_goals_quota");
+                return Self::deny("concurrent_goals_quota");
             }
             charged = true;
         }
@@ -217,18 +210,6 @@ impl Goal {
         );
         self.by_continuation.insert(continuation_id, id);
         self.nodes.get_mut(&parent_id).unwrap().children.push(id);
-        ctx.emit(JournalEventKind::GoalSpawned {
-            goal_id: id,
-            parent_goal_id: Some(parent_id),
-            continuation_id,
-            depth: child_depth,
-        });
-        if self.railguards.attenuate_children {
-            ctx.emit(JournalEventKind::CapabilityAttenuated {
-                continuation_id,
-                allowed_count: 0,
-            });
-        }
         if let ExecOutcome::Completed { results } = outcome {
             self.finish(id, ctx, GoalStatus::Completed(result_i32(&results)));
         }
@@ -312,7 +293,6 @@ impl Goal {
             if charged {
                 ctx.add_quota(QuotaDimension::ConcurrentGoals, 1);
             }
-            ctx.emit(JournalEventKind::GoalCancelled { goal_id: id });
         }
         Ok(())
     }
@@ -330,7 +310,6 @@ impl Goal {
         if charged {
             ctx.add_quota(QuotaDimension::ConcurrentGoals, 1);
         }
-        ctx.emit(JournalEventKind::GoalCompleted { goal_id: id });
     }
 }
 
@@ -409,8 +388,6 @@ impl Plugin for Goal {
         if charged {
             self.pending_releases += 1;
         }
-        self.pending_events
-            .push(JournalEventKind::GoalCompleted { goal_id: id });
     }
 
     fn take_quota_credits(&mut self) -> Vec<(QuotaDimension, u64)> {
@@ -421,10 +398,6 @@ impl Plugin for Goal {
         } else {
             vec![(QuotaDimension::ConcurrentGoals, n)]
         }
-    }
-
-    fn take_events(&mut self) -> Vec<JournalEventKind> {
-        std::mem::take(&mut self.pending_events)
     }
 
     fn capability_allowlist(&self, continuation_id: u32) -> Option<Vec<CapHandle>> {
@@ -566,7 +539,6 @@ fn decode_goal(bytes: &[u8]) -> Result<Goal, HostError> {
         next_id,
         now_millis,
         pending_releases: 0,
-        pending_events: Vec::new(),
     };
     for _ in 0..count {
         let id = r.u32()?;
@@ -828,8 +800,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let names = host.instance().unwrap().journal.event_names();
-        assert!(names.contains(&"GoalSpawned"));
-        assert!(names.contains(&"GoalCompleted"));
+        assert!(names.contains(&"HostCallSuspended"));
+        assert!(names.contains(&"HostCallResumed"));
+        assert!(!names.contains(&"GoalSpawned"));
     }
 
     #[test]
@@ -913,7 +886,7 @@ mod tests {
             .unwrap()
             .journal
             .event_names()
-            .contains(&"GoalCancelled"));
+            .contains(&"HostCallResumed"));
     }
 
     #[test]
@@ -950,12 +923,9 @@ mod tests {
         host.instantiate_text(&src_for(echo_id, goal_id)).unwrap();
         let err = host.run("main", &[], 1000).unwrap_err();
         assert!(err.message.contains("max_depth"), "{err}");
-        assert!(host
-            .instance()
-            .unwrap()
-            .journal
-            .event_names()
-            .contains(&"GoalDenied"));
+        let names = host.instance().unwrap().journal.event_names();
+        assert!(names.contains(&"HostCallSuspended"));
+        assert!(names.contains(&"HostCallFailed"));
     }
 
     #[test]
@@ -987,6 +957,6 @@ mod tests {
             .unwrap()
             .journal
             .event_names()
-            .contains(&"CapabilityAttenuated"));
+            .contains(&"HostCallSuspended"));
     }
 }

@@ -3,8 +3,8 @@ use crate::plugin::{Plugin, PluginContext, PluginResult};
 use std::collections::HashMap;
 use tollana_core::{
     assign_local_ids, decode_text, hash_plugin_identity, CapHandle, ExecOutcome, ExportKind,
-    HostInterfaceError, HostRebind, Instance, JournalEventKind, JournalSink, Label, Module,
-    PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaDimension,
+    HostCall, HostInterfaceError, HostRebind, Instance, JournalEventKind, JournalSink, Label,
+    Module, PluginBinding, PluginIdentity, PluginIdentityInput, PluginStateEntry, QuotaDimension,
     QuotaSlot, SuspendReason, TrapKind, Value,
 };
 
@@ -276,12 +276,15 @@ impl Host {
         Ok(None)
     }
 
-    fn dispatch_call(
-        &mut self,
-        call: tollana_core::HostCall,
-    ) -> Result<Option<ExecOutcome>, HostError> {
-        self.enforce_allowlist(&call)?;
-        self.charge_call(call.continuation_identifier)?;
+    fn dispatch_call(&mut self, call: HostCall) -> Result<Option<ExecOutcome>, HostError> {
+        if let Err(e) = self.enforce_allowlist(&call) {
+            self.journal_failed(&call, &e.message);
+            return Err(e);
+        }
+        if let Err(e) = self.charge_call(call.continuation_identifier) {
+            self.journal_failed(&call, &e.message);
+            return Err(e);
+        }
         let idx = self
             .slots
             .iter()
@@ -308,8 +311,8 @@ impl Host {
             )
         };
         self.slots[idx].plugin = Some(plugin);
-        match result? {
-            PluginResult::Immediate(values) => {
+        match result {
+            Ok(PluginResult::Immediate(values)) => {
                 let before = self.continuation_ids();
                 let outcome = self
                     .instance
@@ -319,7 +322,25 @@ impl Host {
                 self.note_completed(&before, &outcome);
                 Ok(Some(outcome))
             }
-            PluginResult::Pending(_) => Ok(None),
+            Ok(PluginResult::Pending(_)) => Ok(None),
+            Err(e) => {
+                self.journal_failed(&call, &e.message);
+                Err(e)
+            }
+        }
+    }
+
+    fn journal_failed(&mut self, call: &HostCall, message: &str) {
+        if let Some(inst) = self.instance.as_mut() {
+            inst.journal.append(
+                JournalEventKind::HostCallFailed {
+                    plugin_id: call.plugin_id,
+                    method_id: call.method_id,
+                    continuation_identifier: call.continuation_identifier,
+                    message: message.to_string(),
+                },
+                Label::Public,
+            );
         }
     }
 
@@ -365,18 +386,13 @@ impl Host {
                 plugin.on_continuation_completed(id, results);
             }
         }
-        let mut events = Vec::new();
         let mut credits = Vec::new();
         for slot in &mut self.slots {
             if let Some(plugin) = slot.plugin.as_mut() {
-                events.extend(plugin.take_events());
                 credits.extend(plugin.take_quota_credits());
             }
         }
         if let Some(inst) = self.instance.as_mut() {
-            for ev in events {
-                inst.journal.append(ev, Label::Public);
-            }
             for (dim, n) in credits {
                 inst.add_quota(dim, n);
             }
@@ -522,10 +538,6 @@ impl PluginContext for InstanceCtx<'_> {
                 generation: e.generation,
             })
             .collect()
-    }
-
-    fn emit(&mut self, kind: JournalEventKind) {
-        self.instance.journal.append(kind, Label::Public);
     }
 }
 

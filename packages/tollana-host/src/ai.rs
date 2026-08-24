@@ -2,7 +2,7 @@ use crate::error::HostError;
 use crate::plugin::{Plugin, PluginContext, PluginResult};
 use crate::schema::{function_type, parse_package_schema, AI_SCHEMA_BYTES};
 use std::collections::BTreeMap;
-use tollana_core::{CapHandle, FunctionType, JournalEventKind, Label, QuotaDimension, Value};
+use tollana_core::{CapHandle, FunctionType, Label, QuotaDimension, Value};
 
 pub const METHOD_CHAT: u32 = 0;
 pub const METHOD_GENERATE: u32 = 1;
@@ -72,9 +72,6 @@ impl Ai {
             return Err(HostError::new("ai methods expect one i32"));
         };
         if self.external && prompt.label >= Label::Confidential {
-            ctx.emit(JournalEventKind::AiDenied {
-                reason: "external_confidential".into(),
-            });
             return Err(HostError::new("external_confidential"));
         }
         let tokens_in = 1;
@@ -82,21 +79,10 @@ impl Ai {
         if ctx.quota_remaining(QuotaDimension::Tokens).is_some()
             && !ctx.consume_quota(QuotaDimension::Tokens, tokens_in + tokens_out)
         {
-            ctx.emit(JournalEventKind::AiDenied {
-                reason: "tokens_quota".into(),
-            });
             return Err(HostError::new("tokens_quota"));
         }
         let reply = self.complete(bits);
         self.samples.push((method_id, reply as i64));
-        ctx.emit(JournalEventKind::AiCall {
-            model: self.model.clone(),
-            method_id,
-            prompt_label: prompt.label,
-            tokens_in,
-            tokens_out,
-            latency_millis: self.latency_millis,
-        });
         if self.pending {
             return Ok(PluginResult::Pending(0));
         }
@@ -258,12 +244,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(host.plugin_samples("ai"), [(METHOD_CHAT, 42)]);
-        assert!(host
-            .instance()
-            .unwrap()
-            .journal
-            .event_names()
-            .contains(&"AiCall"));
+        let names = host.instance().unwrap().journal.event_names();
+        assert!(names.contains(&"HostCallSuspended"));
+        assert!(names.contains(&"HostCallResumed"));
     }
 
     #[test]
@@ -349,12 +332,30 @@ mod tests {
             .unwrap();
         let err = host.run("main", &[], 1000).unwrap_err();
         assert!(err.message.contains("external_confidential"), "{err}");
-        assert!(host
+        let names = host.instance().unwrap().journal.event_names();
+        assert!(names.contains(&"HostCallSuspended"));
+        assert!(names.contains(&"HostCallFailed"));
+        let failed = host
             .instance()
             .unwrap()
             .journal
-            .event_names()
-            .contains(&"AiDenied"));
+            .events
+            .iter()
+            .find(|e| e.kind.name() == "HostCallFailed")
+            .unwrap();
+        match &failed.kind {
+            tollana_core::JournalEventKind::HostCallFailed {
+                plugin_id,
+                method_id,
+                message,
+                ..
+            } => {
+                assert_eq!(*plugin_id, ai_id);
+                assert_eq!(*method_id, METHOD_CHAT);
+                assert!(message.contains("external_confidential"));
+            }
+            other => panic!("{}", other.name()),
+        }
     }
 
     #[test]

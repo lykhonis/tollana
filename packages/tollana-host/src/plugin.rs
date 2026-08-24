@@ -1,5 +1,5 @@
 use crate::error::HostError;
-use tollana_core::{CapHandle, ExecOutcome, FunctionType, JournalEventKind, QuotaDimension, Value};
+use tollana_core::{CapHandle, ExecOutcome, FunctionType, QuotaDimension, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PluginResult {
@@ -20,7 +20,6 @@ pub trait PluginContext {
     fn add_quota(&mut self, dimension: QuotaDimension, amount: u64);
     fn quota_remaining(&self, dimension: QuotaDimension) -> Option<u64>;
     fn live_capabilities(&self) -> Vec<CapHandle>;
-    fn emit(&mut self, kind: JournalEventKind);
 }
 
 pub trait Plugin {
@@ -51,9 +50,6 @@ pub trait Plugin {
         Ok(())
     }
     fn take_quota_credits(&mut self) -> Vec<(QuotaDimension, u64)> {
-        Vec::new()
-    }
-    fn take_events(&mut self) -> Vec<JournalEventKind> {
         Vec::new()
     }
 }
