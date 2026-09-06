@@ -10,7 +10,9 @@ use tollana_core::{
 pub const METHOD_RUN: u32 = 0;
 const PAGE_BYTES: u64 = 65536;
 
-pub struct Code;
+pub struct Code {
+    allowlist: Vec<CapHandle>,
+}
 
 impl Default for Code {
     fn default() -> Self {
@@ -20,12 +22,28 @@ impl Default for Code {
 
 impl Code {
     pub fn new() -> Self {
-        Self
+        Self {
+            allowlist: Vec::new(),
+        }
+    }
+
+    pub fn with_allowlist(mut self, caps: Vec<CapHandle>) -> Self {
+        self.allowlist = caps;
+        self
+    }
+
+    fn granted_caps(&self, passed: &[CapHandle]) -> Vec<CapHandle> {
+        passed
+            .iter()
+            .copied()
+            .filter(|c| self.allowlist.contains(c))
+            .collect()
     }
 
     fn run(
         &mut self,
         args: &[Value],
+        caps: &[CapHandle],
         ctx: &mut dyn PluginContext,
     ) -> Result<PluginResult, HostError> {
         let src_ptr = i32_arg(args, 0)?;
@@ -57,6 +75,9 @@ impl Code {
         }
         let mut child = Instance::instantiate_with(module, &[], Vec::new(), max_pages, &quotas)
             .map_err(|e| map_instantiate(e, hash))?;
+        for handle in self.granted_caps(caps) {
+            child.grant_cap(handle, Vec::new());
+        }
         let outcome = child
             .invoke("main", &[Value::i32(input, input_label)], fuel as u64)
             .map_err(|e| map_invoke(e, hash))?;
@@ -148,11 +169,11 @@ impl Plugin for Code {
         &mut self,
         method_id: u32,
         args: &[Value],
-        _caps: &[CapHandle],
+        caps: &[CapHandle],
         ctx: &mut dyn PluginContext,
     ) -> Result<PluginResult, HostError> {
         match method_id {
-            METHOD_RUN => self.run(args, ctx),
+            METHOD_RUN => self.run(args, caps, ctx),
             other => Err(HostError::new(format!("unknown code method {other}"))),
         }
     }
@@ -172,8 +193,9 @@ impl Plugin for Code {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Clock;
     use crate::host::Host;
-    use tollana_core::Label;
+    use tollana_core::{JournalEventKind, Label};
 
     const CHILD_ADD: &str = r#"
 (module
@@ -259,5 +281,77 @@ mod tests {
             host.instance().unwrap().machine.remaining_fuel > 990,
             "parent fuel should be independent of a starved child"
         );
+    }
+
+    #[test]
+    fn default_allowlist_is_empty() {
+        let granted = CapHandle {
+            table_index: 1,
+            generation: 1,
+        };
+        assert!(Code::new().granted_caps(&[granted]).is_empty());
+    }
+
+    #[test]
+    fn allowlist_intersection_drops_ungranted_handles() {
+        let allowed = CapHandle {
+            table_index: 1,
+            generation: 1,
+        };
+        let extra = CapHandle {
+            table_index: 2,
+            generation: 1,
+        };
+        let code = Code::new().with_allowlist(vec![allowed]);
+        assert!(code.granted_caps(&[]).is_empty());
+        assert_eq!(code.granted_caps(&[allowed, extra]), vec![allowed]);
+    }
+
+    const CHILD_CLOCK: &str = r#"
+(module
+  (host.import clock.now_wall
+    (pluginId 0)
+    (methodId 0)
+    (result i64))
+  (func (export "main") (param i32) (result i32)
+    (host.invoke clock.now_wall)
+    drop
+    (local.get 0)))
+"#;
+
+    #[test]
+    fn child_cannot_invoke_parent_clock() {
+        let mut host = Host::new();
+        host.register(Box::new(Clock::virtual_at(1, 0))).unwrap();
+        host.register(Box::new(Code::new())).unwrap();
+        host.bind().unwrap();
+        let id = host.plugin_id("code").unwrap();
+        let len = CHILD_CLOCK.len() as i32;
+        host.instantiate_text(&parent_module(id, len, 0, 1000, 0))
+            .unwrap();
+        host.write_linear_memory(0, CHILD_CLOCK.as_bytes()).unwrap();
+        let err = host.run("main", &[], 1000).unwrap_err();
+        assert!(err.message.contains("unbound_plugin"), "{err}");
+        let failed = host
+            .instance()
+            .unwrap()
+            .journal
+            .events
+            .iter()
+            .find(|e| e.kind.name() == "HostCallFailed")
+            .unwrap();
+        match &failed.kind {
+            JournalEventKind::HostCallFailed {
+                plugin_id,
+                method_id,
+                message,
+                ..
+            } => {
+                assert_eq!(*plugin_id, id);
+                assert_eq!(*method_id, METHOD_RUN);
+                assert!(message.contains("unbound_plugin"), "{message}");
+            }
+            other => panic!("{}", other.name()),
+        }
     }
 }
