@@ -1,1 +1,50 @@
+@import '@fontsource/geist-mono/latin-400.css';
+@import '@fontsource/geist-mono/latin-500.css';
 @import 'tailwindcss' source('../');
+
+@theme {
+  --font-sans: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-canvas: #f6f3ec;
+  --color-canvas-2: #ebe6dc;
+  --color-ink: #1a1d21;
+  --color-ink-soft: #5c6570;
+  --color-hairline: rgb(26 29 33 / 0.12);
+  --color-accent: #0b6e99;
+}
+
+@layer base {
+  html {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100dvh;
+    background: var(--color-canvas);
+  }
+
+  ::selection {
+    background: #c5e4f2;
+    color: #1a1d21;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

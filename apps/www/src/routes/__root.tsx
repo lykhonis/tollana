@@ -2,6 +2,8 @@
 import * as React from 'react'
 import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
 import { DefaultCatchBoundary } from '@/components/DefaultCatchBoundary'
+import { Footer } from '@/components/Footer'
+import { Header } from '@/components/Header'
 import { NotFound } from '@/components/NotFound'
 import { copy } from '@/lib/site'
 import appCss from '@/styles/app.css?url'
@@ -11,9 +13,14 @@ export const Route = createRootRoute({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+      { name: 'theme-color', content: '#F6F3EC' },
       { title: copy.title },
     ],
-    links: [{ rel: 'stylesheet', href: appCss }],
+    links: [
+      { rel: 'stylesheet', href: appCss },
+      { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+      { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+    ],
   }),
   errorComponent: DefaultCatchBoundary,
   notFoundComponent: () => <NotFound />,
@@ -26,8 +33,12 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body>
-        <main>{children}</main>
+      <body className="bg-canvas text-ink min-h-dvh antialiased">
+        <div className="flex min-h-dvh flex-col">
+          <Header />
+          <main className="flex flex-1 flex-col">{children}</main>
+          <Footer />
+        </div>
         <Scripts />
       </body>
     </html>

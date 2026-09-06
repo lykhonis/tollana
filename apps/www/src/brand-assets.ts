@@ -1,0 +1,47 @@
+import { fileURLToPath } from 'node:url'
+import sharp from 'sharp'
+import { brand } from '@/lib/mark'
+
+const publicDir = fileURLToPath(new URL('../public', import.meta.url))
+
+function markSvg(size: number) {
+  const pad = size / 8
+  const scale = (size - pad * 2) / 24
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <rect width="${size}" height="${size}" fill="${brand.canvas}"/>
+      <g transform="translate(${pad} ${pad}) scale(${scale})" fill="${brand.accent}">
+        <path d="${brand.markPath}"/>
+      </g>
+    </svg>`,
+  )
+}
+
+await sharp(markSvg(512)).png().toFile(`${publicDir}/logo.png`)
+await sharp(markSvg(180)).png().toFile(`${publicDir}/apple-touch-icon.png`)
+
+const badge = await sharp(markSvg(264)).png().toBuffer()
+const label = await sharp(
+  Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80">
+    <text x="0" y="55" fill="${brand.ink}" font-family="Geist Mono, ui-monospace, Menlo, monospace" font-size="42" letter-spacing="6">TOLLANA</text>
+  </svg>`),
+)
+  .png()
+  .toBuffer()
+
+await sharp({
+  create: {
+    width: 1200,
+    height: 630,
+    channels: 3,
+    background: brand.canvas,
+  },
+})
+  .composite([
+    { input: badge, left: 160, top: 183 },
+    { input: label, left: 450, top: 275 },
+  ])
+  .jpeg({ quality: 88 })
+  .toFile(`${publicDir}/og.jpg`)
+
+console.log('wrote logo.png, apple-touch-icon.png, og.jpg')

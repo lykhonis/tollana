@@ -6,5 +6,7 @@ describe('www copy', () => {
     expect(SITE_ORIGIN).toBe('https://tollana.ai')
     expect(GITHUB_REPO).toBe('https://github.com/lykhonis/tollana')
     expect(copy.siteName).toBe('Tollana')
+    expect(copy.copyright).toContain('2026')
+    expect(copy.license).toBe('Apache-2.0')
   })
 })
