@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod clock;
+pub mod code;
 pub mod context;
 pub mod error;
 pub mod fs;
@@ -12,6 +13,7 @@ pub mod schema;
 
 pub use ai::{Ai, METHOD_CHAT, METHOD_EMBED, METHOD_GENERATE};
 pub use clock::{Clock, METHOD_NOW_MONOTONIC, METHOD_NOW_WALL};
+pub use code::{Code, METHOD_RUN};
 pub use context::{Context, METHOD_LIST, METHOD_READ};
 pub use error::HostError;
 pub use fs::{Fs, METHOD_LIST as FS_METHOD_LIST, METHOD_READ as FS_METHOD_READ, METHOD_WRITE};
