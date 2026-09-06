@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -e
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  pnpm nx affected -t format,lint,check,test,typecheck --parallel=1 --base=origin/main
+else
+  pnpm nx run-many -t format,lint,check,test,typecheck --parallel=1
+fi

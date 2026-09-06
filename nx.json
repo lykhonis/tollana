@@ -1,17 +1,46 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "analytics": false,
+  "workspaceLayout": {
+    "appsDir": "apps",
+    "libsDir": "packages"
+  },
   "namedInputs": {
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.test.ts",
+      "!{projectRoot}/**/*.spec.ts"
+    ],
     "sharedGlobals": [
+      "{workspaceRoot}/pnpm-lock.yaml",
+      "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/rust-toolchain.toml",
       "{workspaceRoot}/rustfmt.toml"
     ]
   },
   "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "cache": true,
+      "inputs": ["production", "^production"]
+    },
     "format": { "cache": true },
-    "lint": { "cache": true },
-    "test": { "cache": true },
-    "check": { "cache": true }
-  }
+    "lint": {
+      "cache": true,
+      "inputs": ["default"]
+    },
+    "test": {
+      "cache": true,
+      "inputs": ["default", "^production"]
+    },
+    "check": { "cache": true },
+    "typecheck": {
+      "cache": true,
+      "inputs": ["default", "^production"]
+    }
+  },
+  "defaultBase": "main",
+  "useInferencePlugins": false
 }

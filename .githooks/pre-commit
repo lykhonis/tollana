@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-cd "$(git rev-parse --show-toplevel)"
-npx nx run-many -t format,lint --parallel=1

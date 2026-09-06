@@ -8,7 +8,7 @@ A runtime for long-running AI agents that can pause, move, and pick up exactly w
 
 Agents should survive host changes, stay inspectable after the fact, and never inherit more power than you granted. Tollana is built around that: durable runs, a complete audit trail, and a host that you can swap without rewriting the agent.
 
-The name is from *Stargate*.
+The name is from _Stargate_.
 
 ## Why
 
@@ -16,23 +16,24 @@ Most agent stacks assume a process that stays up, a single model backend, and im
 
 Tollana treats a run as something you can **suspend, migrate, replay, and meter**, with **no ambient authority**.
 
-| Quality | Meaning |
-|---------|---------|
-| **Durable** | A run can stop mid-work, restore on another machine, and continue without loss of state. Snapshots are exact, not “best effort.” |
-| **Portable** | The same agent runs from a phone or embedded device through a laptop to a cluster or the edge. The host changes; the agent does not. |
-| **Modular** | Models, files, networks, and other powers are not baked into the runtime. The host attaches only what that run is allowed to use. |
-| **Swappable** | Switch providers, local vs cloud models, storage, or policy without rewriting agent code. Every plugin is an equal package; a restore will not silently bind to a different version. |
-| **Auditable** | Meaningful steps are journaled as they happen. Replay, time-travel, and inspect a run instead of reconstructing it from leftover logs. |
-| **Least privilege** | Guests start with nothing. Every power is an explicit, attenuable capability. Sensitive data can stay on-device by policy. |
-| **Accountable** | Budgets—compute, tokens, and the rest—are first-class. Cost and usage are attributable per run and per sub-goal. |
-| **Untrusted by default** | Model-generated code runs in isolation, on a tight budget, with only the capabilities you pass in. |
+| Quality                  | Meaning                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Durable**              | A run can stop mid-work, restore on another machine, and continue without loss of state. Snapshots are exact, not “best effort.”                                                     |
+| **Portable**             | The same agent runs from a phone or embedded device through a laptop to a cluster or the edge. The host changes; the agent does not.                                                 |
+| **Modular**              | Models, files, networks, and other powers are not baked into the runtime. The host attaches only what that run is allowed to use.                                                    |
+| **Swappable**            | Switch providers, local vs cloud models, storage, or policy without rewriting agent code. Every plugin is an equal package; a restore will not silently bind to a different version. |
+| **Auditable**            | Meaningful steps are journaled as they happen. Replay, time-travel, and inspect a run instead of reconstructing it from leftover logs.                                               |
+| **Least privilege**      | Guests start with nothing. Every power is an explicit, attenuable capability. Sensitive data can stay on-device by policy.                                                           |
+| **Accountable**          | Budgets—compute, tokens, and the rest—are first-class. Cost and usage are attributable per run and per sub-goal.                                                                     |
+| **Untrusted by default** | Model-generated code runs in isolation, on a tight budget, with only the capabilities you pass in.                                                                                   |
 
 ## Development
 
-Nx is the only entry. After `npm install`, git hooks run `format` and `lint` on commit, and `format`, `lint`, `check`, and `test` on push (`--parallel=1`, same as CI). Bypass with `git commit --no-verify` / `git push --no-verify`.
+Nx is the only entry. Requires **Node 22** and **pnpm**. After `pnpm install`, git hooks format and lint JavaScript on commit, run Rust `format` and `lint` when Rust files are staged, and run `format`, `lint`, `check`, `test`, and `typecheck` on push (`--parallel=1`, same as CI). Bypass with `git commit --no-verify` / `git push --no-verify`.
 
 ```text
-npx nx run-many -t format,lint,check,test --parallel=1
+pnpm install
+pnpm nx run-many -t format,lint,check,test --parallel=1
 ```
 
 ## Contributing

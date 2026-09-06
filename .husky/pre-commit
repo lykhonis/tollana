@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -e
+pnpm lint-staged
+if git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(rs|toml)$|^rust-toolchain|^rustfmt.toml|^Cargo.lock$|^Cargo.toml$' >/dev/null 2>&1; then
+  pnpm nx run-many -t format,lint --projects=tollana-core,tollana-host --parallel=1
+fi

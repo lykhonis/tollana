@@ -1,0 +1,12 @@
+node_modules
+dist
+target
+.output
+.nx
+.wrangler
+pnpm-lock.yaml
+Cargo.lock
+*.rs
+docs
+routeTree.gen.ts
+worker-configuration.d.ts
