@@ -54,7 +54,7 @@ impl Code {
         let input_label = args[2].label;
         let source = ctx.read_memory(src_ptr, src_len).unwrap_or_default();
         let hash = hash_canonical_bytes(&source);
-        if source.len() != src_len as usize || src_len < 0 {
+        if src_len < 0 || source.len() != src_len as usize {
             return Err(deny("invalid_source", hash));
         }
         if fuel <= 0 {
@@ -350,6 +350,106 @@ mod tests {
                 assert_eq!(*plugin_id, id);
                 assert_eq!(*method_id, METHOD_RUN);
                 assert!(message.contains("unbound_plugin"), "{message}");
+            }
+            other => panic!("{}", other.name()),
+        }
+    }
+
+    const CHILD_LOAD: &str = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (param i32) (result i32)
+    (i32.load (i32.const 400))))
+"#;
+
+    const CHILD_MARK: &str = r#"
+(module
+  (memory (pages 1))
+  (func (export "main") (param i32) (result i32)
+    (i32.store (i32.const 0) (i32.const 0x01020304))
+    (i32.add (local.get 0) (i32.const 1))))
+"#;
+
+    const MARK: [u8; 4] = [0x04, 0x03, 0x02, 0x01];
+
+    #[test]
+    fn child_cannot_observe_parent_memory() {
+        let mut host = Host::new();
+        host.register(Box::new(Code::new())).unwrap();
+        host.bind().unwrap();
+        let id = host.plugin_id("code").unwrap();
+        let src = CHILD_LOAD.as_bytes();
+        host.instantiate_text(&parent_module(id, src.len() as i32, 0, 1000, 1))
+            .unwrap();
+        host.write_linear_memory(0, src).unwrap();
+        host.write_linear_memory(400, &[0x44, 0x33, 0x22, 0x11])
+            .unwrap();
+        match host.run("main", &[], 1000).unwrap() {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(0, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            host.read_linear_memory(400, 4).unwrap(),
+            [0x44, 0x33, 0x22, 0x11]
+        );
+    }
+
+    #[test]
+    fn parent_snapshot_does_not_inline_child_heap() {
+        let (mut host, out) = run_child(CHILD_MARK, 41, 1000, 1);
+        match out {
+            ExecOutcome::Completed { results } => {
+                assert_eq!(results, vec![Value::i32(42, Label::Public)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_ne!(&host.instance().unwrap().machine.linear_memory[0..4], &MARK);
+        let bytes = host.snapshot().unwrap();
+        let decoded = tollana_core::decode_container(&bytes, None).unwrap();
+        let core = tollana_core::decode_tirs(&decoded.body.tirs).unwrap();
+        assert!(
+            !contains_mark(&core.linear_memory),
+            "parent TIRS memory must not contain child heap"
+        );
+        for entry in &decoded.body.plugin_state {
+            assert!(
+                !contains_mark(&entry.blob),
+                "code plugin blob must not retain child heap"
+            );
+        }
+    }
+
+    fn contains_mark(bytes: &[u8]) -> bool {
+        bytes.windows(4).any(|w| w == MARK)
+    }
+
+    #[test]
+    fn denial_journals_source_sha256() {
+        let mut host = Host::new();
+        host.register(Box::new(Clock::virtual_at(1, 0))).unwrap();
+        host.register(Box::new(Code::new())).unwrap();
+        host.bind().unwrap();
+        let id = host.plugin_id("code").unwrap();
+        let src = CHILD_CLOCK.as_bytes();
+        host.instantiate_text(&parent_module(id, src.len() as i32, 0, 1000, 0))
+            .unwrap();
+        host.write_linear_memory(0, src).unwrap();
+        let err = host.run("main", &[], 1000).unwrap_err();
+        let expected = format!("source_sha256={}", hex32(&hash_canonical_bytes(src)));
+        assert!(err.message.contains(&expected), "{err}");
+        let failed = host
+            .instance()
+            .unwrap()
+            .journal
+            .events
+            .iter()
+            .find(|e| e.kind.name() == "HostCallFailed")
+            .unwrap();
+        match &failed.kind {
+            JournalEventKind::HostCallFailed { message, .. } => {
+                assert!(message.contains(&expected), "{message}");
             }
             other => panic!("{}", other.name()),
         }
