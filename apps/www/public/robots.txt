@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Content-Signal: search=yes,ai-train=yes,ai-input=yes,use=full
+Sitemap: https://tollana.ai/sitemap.xml
+# https://tollana.ai/llms.txt

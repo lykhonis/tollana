@@ -1,0 +1,22 @@
+/
+  Cache-Control: public, max-age=60, stale-while-revalidate=300
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/*.svg
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/*.png
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/*.jpg
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/*.jpeg
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/*.woff2
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/assets/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
