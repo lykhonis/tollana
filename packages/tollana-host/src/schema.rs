@@ -9,6 +9,7 @@ pub const CONTEXT_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/context.json"
 pub const FS_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/fs.json");
 pub const NET_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/net.json");
 pub const RANDOM_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/random.json");
+pub const CODE_SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/code.json");
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PackageSchema {
@@ -162,5 +163,21 @@ mod tests {
         assert!(schema.methods[0].params.is_empty());
         assert_eq!(schema.methods[0].results, ["i64"]);
         assert_eq!(schema.methods[0].capabilities, ["random.read"]);
+    }
+
+    #[test]
+    fn code_schema_fixture_parses() {
+        let schema = parse_package_schema(CODE_SCHEMA_BYTES).unwrap();
+        assert_eq!(schema.name, "code");
+        assert_eq!(schema.version, "1.0.0");
+        assert_eq!(schema.methods.len(), 1);
+        assert_eq!(schema.methods[0].id, 0);
+        assert_eq!(schema.methods[0].name, "run");
+        assert_eq!(
+            schema.methods[0].params,
+            ["i32", "i32", "i32", "i32", "i32"]
+        );
+        assert_eq!(schema.methods[0].results, ["i32"]);
+        assert_eq!(schema.methods[0].capabilities, ["code.run"]);
     }
 }

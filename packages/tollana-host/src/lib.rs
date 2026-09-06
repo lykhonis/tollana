@@ -25,6 +25,6 @@ pub use plugin::{Plugin, PluginContext, PluginResult};
 pub use random::{Random, METHOD_NEXT};
 pub use schema::{
     parse_package_schema, MethodSchema, PackageSchema, AI_SCHEMA_BYTES, CLOCK_SCHEMA_BYTES,
-    CONTEXT_SCHEMA_BYTES, FS_SCHEMA_BYTES, GOAL_SCHEMA_BYTES, NET_SCHEMA_BYTES,
+    CODE_SCHEMA_BYTES, CONTEXT_SCHEMA_BYTES, FS_SCHEMA_BYTES, GOAL_SCHEMA_BYTES, NET_SCHEMA_BYTES,
     RANDOM_SCHEMA_BYTES,
 };

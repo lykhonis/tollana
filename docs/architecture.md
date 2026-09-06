@@ -445,7 +445,7 @@ It always runs in a **fresh, isolated child `MachineState`** with:
 
 Exposed as a `code` plugin (`code.run`) and optionally as `goal.run_code`. The `code` plugin is an equal package: no reserved ID, content-hashed like everything else.
 
-Sketch of the method:
+Sketch of the method (informative):
 
 ```text
 code.run({
@@ -458,9 +458,23 @@ code.run({
 }) → { status, result?, error?, stdout?, stderr?, metrics }
 ```
 
+### v0 representation
+
+`code` is an **equal package** (well-known **name** only; no reserved `pluginId`). Guest methods use IR `Value`s. v0 source is Tollana IR text in parent linear memory. Python, JavaScript, and other language adapters are out of v0; a non-IR guest MUST fail the host call (`HostCallFailed`). `goal.run_code` is out of v0.
+
+v0 `code` method: `run` (`i32 src_ptr, i32 src_len, i32 input, i32 fuel, i32 memory_pages → i32`). The pointer/length is UTF-8 Tollana IR text in **parent** linear memory. `input` is the sole argument to the child export `main` (`i32 → i32`). `fuel` is the child's `remainingFuel` and MUST be greater than 0. `memory_pages` is the child's max pages and, when greater than 0, sizes a child `MemoryBytes` slot to `memory_pages × 65536`. The result is the child's `i32` result. Sensitivity is the join of argument labels (RFC 0002); there is no separate sensitivity parameter. v0 `run` has no `Capability` parameters.
+
+The host MUST instantiate a **fresh** child `Instance` / `MachineState`. MUST NOT use a subprocess. Parent linear memory MUST NOT be aliased into the child. The child receives `input` only as the `main` argument. Child fuel, memory, and wall-time quotas are **independent** of the parent: leftover parent budget is not inherited unless the host explicitly slices (RFC 0001 §12).
+
+**Allow-list:** child capabilities = intersection of `HostCall.capabilities` (handles among `Capability` arguments) and a host “code-exec” allow-list that is **normally empty**. v0 `run` has no `Capability` parameters, so that intersection is empty. A child MUST NOT be bound to the parent's plugins. An empty allow-list instantiates the child with **no** plugins. A child module that `host.import`s a plugin MUST fail `code.run` (`HostCallFailed`), not inherit ambient parent authority.
+
+**Child snapshots:** a child is a separate `MachineState`. Parent TIRS MUST NOT include child linear memory, child continuations, child quotas, or child capability tables. If a child is live (in-flight `code.run`), the `code` plugin opaque blob stores the child's own TLNA container; a durable journal pointer is out of v0. After `code.run` completes or fails, the blob MUST NOT retain child memory.
+
 ### Journal
 
-The journal records source (or its hash), inputs, result, metrics, and any capability / policy denials.
+The journal records source (or its hash), inputs, result, metrics, and any capability / policy denials as host calls of the `code` package. Plugins MUST NOT emit per-package event names.
+
+v0: `HostCallSuspended` carries the five `i32` arguments (inputs, including `src_ptr` / `src_len`). `HostCallResumed` carries the `i32` result. Denials (invalid source, `fuel` ≤ 0, negative `memory_pages`, non-granted plugin import, child trap, child `OutOfFuel`, child `QuotaExhausted`, child suspend on `host.invoke`) MUST be `HostCallFailed`. The `HostCallFailed.message` MUST contain `source_sha256=` followed by the lowercase hex SHA-256 of the source bytes actually read (empty input if the parent memory read failed).
 
 ---
 
@@ -641,6 +655,8 @@ Unknown `containerVersion` MUST reject. A valid TIRS blob presented as a contain
 7. Resume scheduler
 
 Plugin identity-hash mismatch, capability mismatch, or missing plugin MUST fail fast. There is no silent upgrade path: v2 of a package is a different identity than v1.
+
+Isolated `code.run` children are **not** inlined into parent TIRS. Restore of the parent MUST NOT merge a child heap into the parent `MachineState`. Child snapshot linkage is the `code` plugin blob specified in §8.
 
 ### Time-travel
 
