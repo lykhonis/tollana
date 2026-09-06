@@ -1,6 +1,7 @@
 # Tollana
 
 [![CI](https://github.com/lykhonis/tollana/actions/workflows/ci.yml/badge.svg)](https://github.com/lykhonis/tollana/actions/workflows/ci.yml)
+[![tollana.ai](https://img.shields.io/website?url=https%3A%2F%2Ftollana.ai&up_message=live&down_message=down&label=tollana.ai)](https://tollana.ai)
 [![Release](https://img.shields.io/github/v/release/lykhonis/tollana?include_prereleases)](https://github.com/lykhonis/tollana/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
@@ -29,11 +30,27 @@ Tollana treats a run as something you can **suspend, migrate, replay, and meter*
 
 ## Development
 
-Nx is the only entry. Requires **Node 22** and **pnpm**. After `pnpm install`, git hooks format and lint JavaScript on commit, run Rust `format` and `lint` when Rust files are staged, and run `format`, `lint`, `check`, `test`, and `typecheck` on push (`--parallel=1`, same as CI). Bypass with `git commit --no-verify` / `git push --no-verify`.
+Nx is the only entry. Requires **Node 22** and **pnpm**. After `pnpm install`, git hooks format and lint JavaScript on commit, run Rust `format` and `lint` when Rust files are staged, and run `format`, `lint`, `check`, `test`, and `typecheck` on push (`--parallel=1`). Bypass with `git commit --no-verify` / `git push --no-verify`.
 
 ```text
 pnpm install
 pnpm nx run-many -t format,lint,check,test --parallel=1
+pnpm nx run-many -t lint,typecheck,test,build --projects=www
+pnpm dev                       # landing site → http://localhost:3000
+```
+
+## Deploy
+
+The public site is `apps/www`, a TanStack Start Worker (`tollana-www`) on **https://tollana.ai**. Push to `main`. After rust and www CI are green, GitHub Actions deploys `www` only when Nx considers it affected, then purges the `tollana.ai` cache.
+
+Repository secret: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers). Repository variables: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`.
+
+The Worker binds the **apex only**. `www.tollana.ai` is a proxied CNAME to the apex plus a zone 301 (path and query preserved), same as lykhonis.com. HTTP → HTTPS is a Redirect Rule, not `always_use_https`. Bot Fight Mode stays on; Cloudflare-managed robots.txt and Block AI Bots stay off so `/robots.txt` and `/llms.txt` are ours.
+
+Manual deploy (Wrangler login or `CLOUDFLARE_API_TOKEN`):
+
+```text
+pnpm nx deploy www
 ```
 
 ## Contributing
