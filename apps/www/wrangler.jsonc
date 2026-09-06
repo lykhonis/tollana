@@ -1,0 +1,14 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tollana-www",
+  "account_id": "3303744fa4f9d4b88b755eae390e585f",
+  "compatibility_date": "2026-09-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+  // Apex only. www.tollana.ai is a proxied CNAME + zone 301, not a Worker host.
+  "workers_dev": false,
+  "routes": [{ "pattern": "tollana.ai", "custom_domain": true }],
+  "observability": {
+    "enabled": true,
+  },
+}
