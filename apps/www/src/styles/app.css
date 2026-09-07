@@ -10,7 +10,7 @@
   --color-ink: #1a1d21;
   --color-ink-soft: #5c6570;
   --color-hairline: rgb(26 29 33 / 0.12);
-  --color-accent: #0b6e99;
+  --color-accent: #0b8f82;
 }
 
 @layer base {
@@ -28,7 +28,7 @@
   }
 
   ::selection {
-    background: #c5e4f2;
+    background: #b8efe8;
     color: #1a1d21;
   }
 

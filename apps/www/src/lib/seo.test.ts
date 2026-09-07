@@ -22,6 +22,10 @@ describe('www SEO', () => {
       content: 'summary_large_image',
     })
     expect(head.meta).toContainEqual({ title: copy.title })
+    expect(head.meta).toContainEqual({
+      name: 'theme-color',
+      content: '#F6F3EC',
+    })
   })
 
   it('exposes the project as structured data', () => {

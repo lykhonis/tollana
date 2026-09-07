@@ -6,7 +6,7 @@ export function Masthead() {
   return (
     <p className="pt-[env(safe-area-inset-top)]">
       <Link to="/" className="inline-flex items-center gap-3" aria-label="Home">
-        <BrandMark className="text-accent size-8 shrink-0" />
+        <BrandMark className="size-8 shrink-0" />
         <span className="text-sm font-medium">{copy.siteName}</span>
       </Link>
     </p>

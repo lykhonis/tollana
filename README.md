@@ -11,6 +11,8 @@ Agents should survive host changes, stay inspectable after the fact, and never i
 
 The name is from _Stargate_.
 
+The public site is [tollana.ai](https://tollana.ai) (`apps/www`). The mark is a ring with a remaining bowl: a continuation you can pick up.
+
 ## Why
 
 Most agent stacks assume a process that stays up, a single model backend, and implicit access to tools. Real work is longer than a request, hops between devices, and has to be explained later—especially when cost, privacy, or generated code are in play.
