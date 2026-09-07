@@ -22,6 +22,8 @@ export function renderLlmsTxt() {
     '',
     copy.sourceBody,
     '',
+    copy.origin,
+    '',
     `- Source: ${GITHUB_REPO}`,
     `- Architecture: ${ARCHITECTURE_URL}`,
     `- License: ${copy.license}`,

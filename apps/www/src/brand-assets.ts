@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
 import { brand, markSvgMarkup } from '@/lib/mark'
@@ -8,6 +9,10 @@ function markSvg(size: number) {
   return Buffer.from(markSvgMarkup(size, { field: true, contrast: false }))
 }
 
+await writeFile(
+  `${publicDir}/favicon.svg`,
+  markSvgMarkup(32, { field: false, contrast: true }),
+)
 await sharp(markSvg(512)).png().toFile(`${publicDir}/logo.png`)
 await sharp(markSvg(180)).png().toFile(`${publicDir}/apple-touch-icon.png`)
 
@@ -35,4 +40,4 @@ await sharp({
   .jpeg({ quality: 88 })
   .toFile(`${publicDir}/og.jpg`)
 
-console.log('wrote logo.png, apple-touch-icon.png, og.jpg')
+console.log('wrote favicon.svg, logo.png, apple-touch-icon.png, og.jpg')

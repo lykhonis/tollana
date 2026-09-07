@@ -9,14 +9,14 @@
       "executor": "nx:run-commands",
       "cache": true,
       "outputs": [
+        "{projectRoot}/public/favicon.svg",
         "{projectRoot}/public/logo.png",
         "{projectRoot}/public/og.jpg",
         "{projectRoot}/public/apple-touch-icon.png"
       ],
       "inputs": [
         "{projectRoot}/src/brand-assets.ts",
-        "{projectRoot}/src/lib/mark.ts",
-        "{projectRoot}/public/favicon.svg"
+        "{projectRoot}/src/lib/mark.ts"
       ],
       "options": {
         "command": "pnpm exec vite-node --config vitest.config.ts src/brand-assets.ts",

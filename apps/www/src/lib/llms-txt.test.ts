@@ -16,6 +16,7 @@ describe('renderLlmsTxt', () => {
     expect(text).toContain(GITHUB_REPO)
     expect(text).toContain(ARCHITECTURE_URL)
     expect(text).toContain('Apache-2.0')
+    expect(text).toContain('Tollan rebuilt on Tollana')
     expect(text).toContain(`${SITE_ORIGIN}/`)
     expect(text).toContain(`${SITE_ORIGIN}/llms.txt`)
     expect(text).toContain(`${SITE_ORIGIN}/sitemap.xml`)

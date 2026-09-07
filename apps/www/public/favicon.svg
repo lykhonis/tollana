@@ -1,22 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <circle
-    cx="12"
-    cy="12"
-    r="8.9"
-    fill="none"
-    stroke="#0B1E3A"
-    stroke-width="0.8"
-  />
-  <circle
-    cx="12"
-    cy="12"
-    r="7.5"
-    fill="none"
-    stroke="#FFFFFF"
-    stroke-width="2"
-  />
-  <path
-    fill="#00E4C8"
-    d="M5.61 13.19A6.5 6.5 0 0 0 18.39 13.19A10 10 0 0 1 5.61 13.19Z"
-  />
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="8.9" fill="none" stroke="#0B1E3A" stroke-width="0.8"/>
+  <circle cx="12" cy="12" r="6.5" fill="#0B1E3A"/>
+  <circle cx="12" cy="12" r="7.5" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+  <path fill="#00E4C8" d="M5.61 13.19A6.5 6.5 0 0 0 18.39 13.19A10 10 0 0 1 5.61 13.19Z"/>
 </svg>

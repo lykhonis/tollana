@@ -83,14 +83,13 @@ export const copy = {
       sketch: 'no ambient authority',
       line: 'The agent program. It only sees what the host placed in its hands.',
     },
-    register: 'register',
-    run: 'run',
   },
   sourceCta: 'source',
   architectureCta: 'architecture',
   sourceBody:
     'Apache-2.0. The architecture RFC and the runtime live in the same repository.',
-  namedFor: 'Named from Stargate.',
+  origin:
+    'In Stargate, the Tollan rebuilt on Tollana after sharing technology destroyed a neighboring world. They did not share it that way again.',
   copyright: '© 2026 Tollana',
   license: 'Apache-2.0',
   notFoundTitle: 'No run at this address',

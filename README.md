@@ -1,5 +1,7 @@
 # Tollana
 
+<img src="apps/www/public/favicon.svg" width="56" height="56" alt="Tollana mark">
+
 [![CI](https://github.com/lykhonis/tollana/actions/workflows/ci.yml/badge.svg)](https://github.com/lykhonis/tollana/actions/workflows/ci.yml)
 [![tollana.ai](https://img.shields.io/website?url=https%3A%2F%2Ftollana.ai&up_message=live&down_message=down&label=tollana.ai)](https://tollana.ai)
 [![Release](https://img.shields.io/github/v/release/lykhonis/tollana?include_prereleases)](https://github.com/lykhonis/tollana/releases)
@@ -9,9 +11,9 @@ A runtime for long-running AI agents that can pause, move, and pick up exactly w
 
 Agents should survive host changes, stay inspectable after the fact, and never inherit more power than you granted. Tollana is built around that: durable runs, a complete audit trail, and a host that you can swap without rewriting the agent.
 
-The name is from _Stargate_.
+The name is from _Stargate_. Tollana is the world the Tollan rebuilt after sharing technology destroyed a neighboring civilization. They did not share it that way again.
 
-The public site is [tollana.ai](https://tollana.ai) (`apps/www`). The mark is a ring with a remaining bowl: a continuation you can pick up.
+The public site is [tollana.ai](https://tollana.ai) (`apps/www`). The mark is a navy disk in a white ring, rimmed in navy, with a cyan bowl remaining at the bottom: a continuation you can pick up.
 
 ## Why
 

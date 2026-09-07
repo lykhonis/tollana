@@ -20,16 +20,16 @@ export function markSvgMarkup(
   size: number,
   opts: { field: boolean; contrast: boolean },
 ) {
-  const field = opts.field
-    ? `<rect width="24" height="24" fill="${brand.navy}"/>`
-    : ''
-  const contrast = opts.contrast
-    ? `<circle cx="12" cy="12" r="8.9" fill="none" stroke="${brand.navy}" stroke-width="0.8"/>`
-    : ''
+  const layers = [
+    opts.field ? `<rect width="24" height="24" fill="${brand.navy}"/>` : '',
+    opts.contrast
+      ? `<circle cx="12" cy="12" r="8.9" fill="none" stroke="${brand.navy}" stroke-width="0.8"/>`
+      : '',
+    `<circle cx="12" cy="12" r="6.5" fill="${brand.navy}"/>`,
+    `<circle cx="12" cy="12" r="7.5" fill="none" stroke="${brand.ring}" stroke-width="2"/>`,
+    `<path fill="${brand.bowl}" d="${bowlPath}"/>`,
+  ].filter(Boolean)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24">
-  ${field}
-  ${contrast}
-  <circle cx="12" cy="12" r="7.5" fill="none" stroke="${brand.ring}" stroke-width="2"/>
-  <path fill="${brand.bowl}" d="${bowlPath}"/>
+  ${layers.join('\n  ')}
 </svg>`
 }

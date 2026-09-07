@@ -10,14 +10,8 @@ export function BrandMark({ className }: { className?: string }) {
       aria-hidden="true"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <circle
-        cx="12"
-        cy="12"
-        r="8.9"
-        fill="none"
-        stroke={brand.navy}
-        strokeWidth="0.8"
-      />
+      <circle cx="12" cy="12" r="6.5" fill={brand.navy} />
+      <path fill={brand.bowl} d={bowlPath} />
       <circle
         cx="12"
         cy="12"
@@ -26,7 +20,14 @@ export function BrandMark({ className }: { className?: string }) {
         stroke={brand.ring}
         strokeWidth="2"
       />
-      <path fill={brand.bowl} d={bowlPath} />
+      <circle
+        cx="12"
+        cy="12"
+        r="8.9"
+        fill="none"
+        stroke={brand.navy}
+        strokeWidth="0.8"
+      />
     </svg>
   )
 }

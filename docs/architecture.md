@@ -14,7 +14,7 @@
 
 ## Abstract
 
-This document specifies the architecture of Tollana, a durable, portable agentic runtime. The name references the advanced civilization planet from *Stargate*.
+This document specifies the architecture of Tollana, a durable, portable agentic runtime. The name is from *Stargate*: Tollana, the world the Tollan rebuilt after sharing technology destroyed a neighboring civilization. They did not share it that way again.
 
 The primary engine is an explicit stack-machine interpreter. Its native format is Tollana IR, specified in [RFC 0002](bytecode.md). External WASM runtimes (Wasmtime, Wasmer, custom, and others) are **not** part of the abstract machine. They MAY exist later only as optional, swappable language adapters. The core MAY be compiled to `wasm32` for deployment; that is a compilation target, not an execution dependency.
 
