@@ -6,7 +6,6 @@
   "type": "module",
   "packageManager": "pnpm@10.15.0",
   "scripts": {
-    "dev": "nx dev www",
     "build": "nx run-many -t build",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",

@@ -34,9 +34,10 @@ Nx is the only entry. Requires **Node 22** and **pnpm**. After `pnpm install`, g
 
 ```text
 pnpm install
-pnpm nx run-many -t format,lint,check,test --parallel=1
-pnpm nx run-many -t lint,typecheck,test,build --projects=www
-pnpm dev                       # landing site → http://localhost:3000
+pnpm nx run-many -t format,lint,check,test --projects=tollana-core,tollana-host --parallel=1
+pnpm nx run-many -t format,lint,typecheck,test,build --projects=www
+pnpm nx dev www                # landing site → http://localhost:3000
+pnpm nx preview www
 ```
 
 ## Deploy
