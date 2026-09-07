@@ -12,16 +12,16 @@ describe('www copy', () => {
     expect(copy.status).toContain('no ambient authority')
   })
 
-  it('journals qualities as runtime events', () => {
-    expect(copy.journal.map((item) => item.event)).toEqual([
-      'snapshot.exact',
-      'host.migrate',
-      'plugin.attach',
-      'plugin.identity',
-      'journal.append',
-      'cap.grant',
-      'quota.meter',
-      'code.isolate',
+  it('cites names that exist in the runtime', () => {
+    expect(copy.journal.map((item) => item.cite)).toEqual([
+      'SnapshotTaken',
+      'MachineState',
+      'host.invoke',
+      'identityHash',
+      'InstructionStepped',
+      'Capability',
+      'QuotaConsumed',
+      'code.run',
     ])
     expect(copy.journal.map((item) => item.label)).toEqual([
       'Durable',

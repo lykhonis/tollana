@@ -13,7 +13,7 @@ export function renderLlmsTxt() {
     `## ${copy.journalHeading}`,
     '',
     ...copy.journal.map(
-      (item) => `- **${item.label}** (\`${item.event}\`): ${item.line}`,
+      (item) => `- **${item.label}** (\`${item.cite}\`): ${item.line}`,
     ),
     '',
     `## ${copy.machineHeading}`,
