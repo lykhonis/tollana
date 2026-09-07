@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { GITHUB_REPO, SITE_ORIGIN, copy } from '@/lib/site'
+import { GITHUB_REPO, SITE_ORIGIN, copy, plugins } from '@/lib/site'
 
 describe('www copy', () => {
   it('points at the apex and GitHub repo', () => {
@@ -9,7 +9,21 @@ describe('www copy', () => {
     expect(copy.title).toContain('runtime for agents that last')
     expect(copy.line).toContain('pause')
     expect(copy.lede).toContain('Guests start with nothing')
-    expect(copy.qualities.map((item) => item.label)).toEqual([
+    expect(copy.status).toContain('no ambient authority')
+  })
+
+  it('journals qualities as runtime events', () => {
+    expect(copy.journal.map((item) => item.event)).toEqual([
+      'snapshot.exact',
+      'host.migrate',
+      'plugin.attach',
+      'plugin.identity',
+      'journal.append',
+      'cap.grant',
+      'quota.meter',
+      'code.isolate',
+    ])
+    expect(copy.journal.map((item) => item.label)).toEqual([
       'Durable',
       'Portable',
       'Modular',
@@ -19,13 +33,15 @@ describe('www copy', () => {
       'Accountable',
       'Untrusted by default',
     ])
-    expect(copy.build.map((item) => item.label)).toEqual([
-      'Host',
-      'Plugins',
-      'Guest',
-    ])
+  })
+
+  it('describes the host, plugins, and guest', () => {
+    expect(copy.machine.host.label).toBe('host')
+    expect(copy.machine.plugins.label).toBe('plugins')
+    expect(copy.machine.guest.label).toBe('guest')
+    expect(plugins).toContain('ai')
+    expect(plugins).toContain('code')
     expect(copy.namedFor).toContain('Stargate')
-    expect(copy.copyright).toContain('2026')
     expect(copy.license).toBe('Apache-2.0')
   })
 })

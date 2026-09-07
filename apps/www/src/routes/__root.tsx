@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 import * as React from 'react'
 import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { Colophon } from '@/components/Colophon'
 import { DefaultCatchBoundary } from '@/components/DefaultCatchBoundary'
-import { Footer } from '@/components/Footer'
-import { Header } from '@/components/Header'
+import { Masthead } from '@/components/Masthead'
 import { NotFound } from '@/components/NotFound'
 import { softwareJsonLd } from '@/lib/seo'
 import appCss from '@/styles/app.css?url'
@@ -40,9 +40,11 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body className="bg-canvas text-ink min-h-dvh antialiased">
         <div className="flex min-h-dvh flex-col">
-          <Header />
+          <div className="mx-auto w-full max-w-3xl px-[clamp(1rem,4vw,2.5rem)] pt-8 sm:pt-12">
+            <Masthead />
+          </div>
           <main className="flex flex-1 flex-col">{children}</main>
-          <Footer />
+          <Colophon />
         </div>
         <Scripts />
       </body>

@@ -3,74 +3,93 @@ export const GITHUB_REPO = 'https://github.com/lykhonis/tollana'
 export const ARCHITECTURE_URL =
   'https://github.com/lykhonis/tollana/blob/main/docs/architecture.md'
 
+export const plugins = [
+  'ai',
+  'clock',
+  'code',
+  'context',
+  'fs',
+  'goal',
+  'net',
+  'random',
+] as const
+
 export const copy = {
   siteName: 'Tollana',
   title: 'Tollana — a runtime for agents that last',
   description:
     'A runtime for long-running AI agents that can pause, move, and pick up exactly where they left off. Durable runs, a complete audit trail, and a host you can swap without rewriting the agent.',
   line: 'Agents that pause, move, and pick up exactly where they left off.',
-  lede: 'Durable runs, a complete audit trail, and a host you can swap without rewriting the agent. Guests start with nothing.',
-  qualitiesHeading: 'What it is',
-  qualities: [
+  lede: 'A run is something you can suspend, migrate, replay, and meter. Guests start with nothing. Every power is a grant.',
+  status: 'exact snapshots · no ambient authority',
+  journalHeading: 'journal',
+  journal: [
     {
+      event: 'snapshot.exact',
       label: 'Durable',
-      line: 'Stop mid-work, restore on another machine, continue without loss. Snapshots are exact, not best effort.',
+      line: 'Stop mid-work, restore on another machine, continue without loss. Snapshots are the machine, not a best-effort dump.',
     },
     {
+      event: 'host.migrate',
       label: 'Portable',
-      line: 'The same agent runs from a phone or embedded device through a laptop to a cluster or the edge.',
+      line: 'The same guest runs from a phone or embedded device through a laptop to a cluster or the edge. The host changes; the agent does not.',
     },
     {
+      event: 'plugin.attach',
       label: 'Modular',
       line: 'Models, files, networks, and other powers are not baked in. The host attaches only what that run may use.',
     },
     {
+      event: 'plugin.identity',
       label: 'Swappable',
-      line: 'Change providers, local vs cloud models, storage, or policy without rewriting the agent.',
+      line: 'Change providers, local vs cloud models, storage, or policy without rewriting the agent. A restore will not silently bind a different plugin version.',
     },
     {
+      event: 'journal.append',
       label: 'Auditable',
-      line: 'Meaningful steps are journaled as they happen. Replay, time-travel, and inspect instead of reconstructing logs.',
+      line: 'Meaningful steps are journaled as they happen. Replay, time-travel, and inspect instead of reconstructing leftover logs.',
     },
     {
+      event: 'cap.grant',
       label: 'Least privilege',
-      line: 'Guests start with nothing. Every power is an explicit, attenuable capability.',
+      line: 'Guests start with nothing. Every power is an explicit, attenuable capability. Sensitive data can stay on-device by policy.',
     },
     {
+      event: 'quota.meter',
       label: 'Accountable',
       line: 'Budgets for compute and tokens are first-class. Cost is attributable per run and per sub-goal.',
     },
     {
+      event: 'code.isolate',
       label: 'Untrusted by default',
       line: 'Model-generated code runs in isolation, on a tight budget, with only the capabilities you pass in.',
     },
   ],
-  buildHeading: 'How it is built',
-  build: [
-    {
-      label: 'Host',
-      line: 'Resolves plugins, grants capabilities, and holds policy. You can replace the host without rewriting the guest.',
+  machineHeading: 'machine',
+  machine: {
+    host: {
+      label: 'host',
+      line: 'Resolves plugins, grants capabilities, and holds policy. Replace the host without rewriting the guest.',
     },
-    {
-      label: 'Plugins',
-      line: 'Equal packages — models, files, network, clocks, goals. Identity is content-hashed so a restore cannot silently bind a different version.',
+    plugins: {
+      label: 'plugins',
+      line: 'Equal packages. Identity is content-hashed so a restore cannot silently bind a different version.',
     },
-    {
-      label: 'Guest',
+    guest: {
+      label: 'guest',
       line: 'The agent program. No ambient authority. It only sees what the host placed in its hands.',
     },
-  ],
-  sourceHeading: 'Source',
+  },
+  sourceCta: 'source',
+  architectureCta: 'architecture',
   sourceBody:
-    'Tollana is Apache-2.0. The architecture RFC and the runtime live in the same repository.',
-  sourceCta: 'View the source',
-  architectureCta: 'Read the architecture',
-  namedFor: 'The name is from Stargate.',
+    'Apache-2.0. The architecture RFC and the runtime live in the same repository.',
+  namedFor: 'Named from Stargate.',
   copyright: '© 2026 Tollana',
   license: 'Apache-2.0',
-  notFoundTitle: 'Page not found',
-  notFoundBody: 'This address is not part of the site.',
-  notFoundHome: 'Back home',
-  errorTitle: 'Something went wrong',
-  errorHome: 'Back home',
+  notFoundTitle: 'No run at this address',
+  notFoundBody: 'This path is not in the journal.',
+  notFoundHome: 'Resume from home',
+  errorTitle: 'The run trapped',
+  errorHome: 'Resume from home',
 } as const

@@ -3,15 +3,17 @@ import { renderLlmsTxt } from '@/lib/llms-txt'
 import { ARCHITECTURE_URL, GITHUB_REPO, SITE_ORIGIN } from '@/lib/site'
 
 describe('renderLlmsTxt', () => {
-  it('describes Tollana and lists qualities', () => {
+  it('describes Tollana as a journaled runtime', () => {
     const text = renderLlmsTxt()
     expect(text).toContain('# Tollana')
     expect(text).toContain('pause, move, and pick up')
+    expect(text).toContain('snapshot.exact')
+    expect(text).toContain('code.isolate')
     expect(text).toContain('Durable')
     expect(text).toContain('Untrusted by default')
-    expect(text).toContain('Host')
-    expect(text).toContain('Plugins')
-    expect(text).toContain('Guest')
+    expect(text).toContain('host')
+    expect(text).toContain('plugins')
+    expect(text).toContain('guest')
     expect(text).toContain(GITHUB_REPO)
     expect(text).toContain(ARCHITECTURE_URL)
     expect(text).toContain('Apache-2.0')

@@ -59,9 +59,6 @@ importers:
       '@tanstack/react-start':
         specifier: ^1.131.0
         version: 1.168.49(esbuild@0.28.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(rollup@4.63.1)(vite@7.3.6(@types/node@26.4.1)(jiti@2.7.0)(lightningcss@1.33.0)(yaml@2.9.0))
-      pixelarticons:
-        specifier: ^2.4.1
-        version: 2.4.1(react@19.2.8)
       react:
         specifier: ^19.1.0
         version: 19.2.8
@@ -3083,12 +3080,6 @@ packages:
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
-
-  pixelarticons@2.4.1:
-    resolution: {integrity: sha512-NIiwuEmBrFT6YG5PdMnOPRsGm0rbz4TiH0P5sgftjrQugxgdF+xtZPgGrgAOL76KUMJ04kk5Bq2lVLnmBg7IPw==}
-    hasBin: true
-    peerDependencies:
-      react: '>=16'
 
   postcss@8.5.28:
     resolution: {integrity: sha512-RRuzqDtt5Y9h3quz5hWhK+TPnsmVs6WwSU6LkJMeY4HstUEDuYTG8UJSdawMRzmzAtV+KEoG8N3Qg2qLy5vM/A==}
@@ -6828,10 +6819,6 @@ snapshots:
   picomatch@4.0.4: {}
 
   picomatch@4.0.7: {}
-
-  pixelarticons@2.4.1(react@19.2.8):
-    dependencies:
-      react: 19.2.8
 
   postcss@8.5.28:
     dependencies:
