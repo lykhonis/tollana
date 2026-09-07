@@ -12,9 +12,7 @@ export function renderLlmsTxt() {
     '',
     `## ${copy.journalHeading}`,
     '',
-    ...copy.journal.map(
-      (item) => `- **${item.label}** (\`${item.cite}\`): ${item.line}`,
-    ),
+    ...copy.journal.map((item) => `- **${item.label}:** ${item.line}`),
     '',
     `## ${copy.machineHeading}`,
     '',

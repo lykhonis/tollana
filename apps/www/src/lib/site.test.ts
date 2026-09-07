@@ -12,17 +12,7 @@ describe('www copy', () => {
     expect(copy.status).toContain('no ambient authority')
   })
 
-  it('cites names that exist in the runtime', () => {
-    expect(copy.journal.map((item) => item.cite)).toEqual([
-      'SnapshotTaken',
-      'MachineState',
-      'host.invoke',
-      'identityHash',
-      'InstructionStepped',
-      'Capability',
-      'QuotaConsumed',
-      'code.run',
-    ])
+  it('lists qualities as a heading and a line', () => {
     expect(copy.journal.map((item) => item.label)).toEqual([
       'Durable',
       'Portable',
