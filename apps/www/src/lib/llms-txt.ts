@@ -17,7 +17,7 @@ export function renderLlmsTxt() {
     `## ${copy.machineHeading}`,
     '',
     `- **${copy.machine.host.label}:** ${copy.machine.host.line}`,
-    `- **${copy.machine.plugins.label}:** ${copy.machine.plugins.line}`,
+    `- **${copy.machine.core.label}:** ${copy.machine.core.line}`,
     `- **${copy.machine.guest.label}:** ${copy.machine.guest.line}`,
     '',
     copy.sourceBody,

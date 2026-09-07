@@ -1,6 +1,6 @@
 import { copy } from '@/lib/site'
 
-const layers = [copy.machine.host, copy.machine.plugins, copy.machine.guest]
+const layers = [copy.machine.host, copy.machine.core, copy.machine.guest]
 
 export function MachineLegend() {
   return (

@@ -62,18 +62,29 @@ export const copy = {
   machine: {
     host: {
       label: 'host',
-      sketch: 'grants · policy · plugin resolution',
+      sketch: 'resolve · hash · grant',
       line: 'Resolves plugins, grants capabilities, and holds policy. Replace the host without rewriting the guest.',
     },
-    plugins: {
-      label: 'plugins',
-      line: 'Equal packages. Identity is content-hashed so a restore cannot silently bind a different version.',
+    core: {
+      label: 'core',
+      sketch: 'stack machine · exact snapshots',
+      line: 'An explicit interpreter. It suspends, resumes, meters, journals, snapshots, and enforces grants. It does not know about models or files.',
+      duties: [
+        'interpret',
+        'continuations',
+        'snapshot',
+        'journal',
+        'quotas',
+        'capabilities',
+      ],
     },
     guest: {
       label: 'guest',
       sketch: 'no ambient authority',
-      line: 'The agent program. No ambient authority. It only sees what the host placed in its hands.',
+      line: 'The agent program. It only sees what the host placed in its hands.',
     },
+    register: 'register',
+    run: 'run',
   },
   sourceCta: 'source',
   architectureCta: 'architecture',

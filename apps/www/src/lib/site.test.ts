@@ -25,10 +25,18 @@ describe('www copy', () => {
     ])
   })
 
-  it('describes the host, plugins, and guest', () => {
+  it('describes the host, core, and guest', () => {
     expect(copy.machine.host.label).toBe('host')
-    expect(copy.machine.host.sketch).toContain('policy')
-    expect(copy.machine.plugins.label).toBe('plugins')
+    expect(copy.machine.host.sketch).toContain('grant')
+    expect(copy.machine.core.label).toBe('core')
+    expect(copy.machine.core.duties).toEqual([
+      'interpret',
+      'continuations',
+      'snapshot',
+      'journal',
+      'quotas',
+      'capabilities',
+    ])
     expect(copy.machine.guest.label).toBe('guest')
     expect(copy.machine.guest.sketch).toBe('no ambient authority')
     expect(plugins).toContain('ai')
