@@ -48,7 +48,7 @@ The public site is `apps/www`, a TanStack Start Worker (`tollana-www`) on **http
 
 Repository secret: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers). Repository variables: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`.
 
-The Worker binds the **apex only**. `www.tollana.ai` is a proxied CNAME to the apex plus a zone 301 (path and query preserved), same as lykhonis.com. HTTP → HTTPS is a Redirect Rule, not `always_use_https`. Bot Fight Mode stays on; Cloudflare-managed robots.txt and Block AI Bots stay off so `/robots.txt` and `/llms.txt` are ours.
+The Worker binds the **apex only**. `www.tollana.ai` is a proxied CNAME to the apex plus a zone 301 (path and query preserved). HTTP → HTTPS is Always Use HTTPS plus a Redirect Rule. HSTS is on (one year, includeSubDomains). Bot Fight Mode, Cloudflare-managed robots.txt, and Block AI Bots stay **off** so classic crawlers and AI providers can fetch `/`, `/robots.txt`, `/sitemap.xml`, and `/llms.txt`.
 
 Manual deploy (Wrangler login or `CLOUDFLARE_API_TOKEN`):
 
