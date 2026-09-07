@@ -4,8 +4,7 @@ export const brand = {
   ink: '#1A1D21',
   inkSoft: '#5C6570',
   accent: '#0B6E99',
-  // Journal ticks, a sealed snapshot, a continue caret —
-  // audit, isolate, pick up where you left off.
+  // Machine frame around an operand stack (TOS shortest).
   markPath:
-    'M1 4h2v2H1zm0 6h2v2H1zm0 6h2v2H1zM5 3h14v2H5zm0 16h14v2H5zM5 5h2v14H5zm12 0h2v14h-2zM9 8h6v8H9zM20 9h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2z',
+    'M4 2h16v2H4zm0 18h16v2H4zM4 4h2v16H4zm14 0h2v16h-2zM7 16h10v2H7zm0-3h10v2H7zM8 10h8v2H8zM9 7h6v2H9z',
 } as const

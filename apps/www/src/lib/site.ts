@@ -62,6 +62,7 @@ export const copy = {
   machine: {
     host: {
       label: 'host',
+      sketch: 'grants · policy · plugin resolution',
       line: 'Resolves plugins, grants capabilities, and holds policy. Replace the host without rewriting the guest.',
     },
     plugins: {
@@ -70,6 +71,7 @@ export const copy = {
     },
     guest: {
       label: 'guest',
+      sketch: 'no ambient authority',
       line: 'The agent program. No ambient authority. It only sees what the host placed in its hands.',
     },
   },
