@@ -2,7 +2,6 @@
 
 <img src="apps/www/public/favicon.svg" width="56" height="56" alt="Tollana mark">
 
-[![CI](https://github.com/lykhonis/tollana/actions/workflows/ci.yml/badge.svg)](https://github.com/lykhonis/tollana/actions/workflows/ci.yml)
 [![tollana.ai](https://img.shields.io/website?url=https%3A%2F%2Ftollana.ai&up_message=live&down_message=down&label=tollana.ai)](https://tollana.ai)
 [![Release](https://img.shields.io/github/v/release/lykhonis/tollana?include_prereleases)](https://github.com/lykhonis/tollana/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -13,7 +12,7 @@ Agents should survive host changes, stay inspectable after the fact, and never i
 
 The name is from _Stargate_. Tollana is the world the Tollan rebuilt after sharing technology destroyed a neighboring civilization. They did not share it that way again.
 
-The public site is [tollana.ai](https://tollana.ai) (`apps/www`). The mark is a navy disk in a white ring, rimmed in navy, with a cyan bowl remaining at the bottom: a continuation you can pick up.
+The public site is [tollana.ai](https://tollana.ai).
 
 ## Why
 
@@ -32,31 +31,12 @@ Tollana treats a run as something you can **suspend, migrate, replay, and meter*
 | **Accountable**          | Budgets—compute, tokens, and the rest—are first-class. Cost and usage are attributable per run and per sub-goal.                                                                     |
 | **Untrusted by default** | Model-generated code runs in isolation, on a tight budget, with only the capabilities you pass in.                                                                                   |
 
-## Development
+A run has three layers. The **host** resolves plugins, grants capabilities, and holds policy. The **core** is an explicit stack-machine interpreter: it suspends, resumes, meters, journals, snapshots, and enforces grants—it does not know about models or files. The **guest** is the agent program; it only sees what the host placed in its hands.
 
-Nx is the only entry. Requires **Node 22** and **pnpm**. After `pnpm install`, git hooks format and lint JavaScript on commit, run Rust `format` and `lint` when Rust files are staged, and run `format`, `lint`, `check`, `test`, and `typecheck` on push (`--parallel=1`). Bypass with `git commit --no-verify` / `git push --no-verify`.
+## Docs
 
-```text
-pnpm install
-pnpm nx run-many -t format,lint,check,test --projects=tollana-core,tollana-host --parallel=1
-pnpm nx run-many -t format,lint,typecheck,test,build --projects=www
-pnpm nx dev www                # landing site → http://localhost:3000
-pnpm nx preview www
-```
-
-## Deploy
-
-The public site is `apps/www`, a TanStack Start Worker (`tollana-www`) on **https://tollana.ai**. Push to `main`. After rust and www CI are green, GitHub Actions deploys `www` only when Nx considers it affected, then purges the `tollana.ai` cache.
-
-Repository secret: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers). Repository variables: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`.
-
-The Worker binds the **apex only**. `www.tollana.ai` is a proxied CNAME to the apex plus a zone 301 (path and query preserved). HTTP → HTTPS is Always Use HTTPS plus a Redirect Rule. HSTS is on (one year, includeSubDomains). Bot Fight Mode, Cloudflare-managed robots.txt, and Block AI Bots stay **off** so classic crawlers and AI providers can fetch `/`, `/robots.txt`, `/sitemap.xml`, and `/llms.txt`.
-
-Manual deploy (Wrangler login or `CLOUDFLARE_API_TOKEN`):
-
-```text
-pnpm nx deploy www
-```
+- [RFC 0001 — Architecture](docs/architecture.md)
+- [RFC 0002 — Tollana IR v0](docs/bytecode.md)
 
 ## Contributing
 
