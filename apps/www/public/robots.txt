@@ -1,5 +1,51 @@
+# Open to search engines and AI crawlers. Full content may be indexed,
+# retrieved, and used as model input. See /llms.txt.
+
 User-agent: *
 Allow: /
 Content-Signal: search=yes,ai-train=yes,ai-input=yes,use=full
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Applebot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Amazonbot
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
 Sitemap: https://tollana.ai/sitemap.xml
 # https://tollana.ai/llms.txt

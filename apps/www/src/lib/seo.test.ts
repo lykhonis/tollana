@@ -7,11 +7,18 @@ describe('www SEO', () => {
     const head = pageHead()
     expect(head.meta).toContainEqual({
       name: 'robots',
-      content: 'index, follow',
+      content:
+        'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1',
     })
     expect(head.links).toContainEqual({
       rel: 'canonical',
       href: `${SITE_ORIGIN}/`,
+    })
+    expect(head.links).toContainEqual({
+      rel: 'alternate',
+      type: 'text/plain',
+      href: `${SITE_ORIGIN}/llms.txt`,
+      title: 'llms.txt',
     })
     expect(head.meta).toContainEqual({
       property: 'og:image',
@@ -38,5 +45,8 @@ describe('www SEO', () => {
     expect(json).toContain(GITHUB_REPO)
     expect(json).toContain('LICENSE-2.0')
     expect(json).toContain(`${SITE_ORIGIN}/logo.png`)
+    expect(json).toContain('isAccessibleForFree')
+    expect(json).toContain('WebPage')
+    expect(json).toContain('"sameAs"')
   })
 })

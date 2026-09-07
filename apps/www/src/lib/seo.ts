@@ -15,7 +15,11 @@ export function pageHead(opts?: {
     meta: [
       { title },
       { name: 'description', content: description },
-      { name: 'robots', content: 'index, follow' },
+      {
+        name: 'robots',
+        content:
+          'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1',
+      },
       { name: 'theme-color', content: '#F6F3EC' },
       { property: 'og:type', content: 'website' },
       { property: 'og:site_name', content: copy.siteName },
@@ -27,15 +31,23 @@ export function pageHead(opts?: {
       { property: 'og:image:width', content: '1200' },
       { property: 'og:image:height', content: '630' },
       { property: 'og:image:alt', content: copy.siteName },
+      { property: 'og:image:type', content: 'image/jpeg' },
       { name: 'twitter:card', content: 'summary_large_image' },
       { name: 'twitter:title', content: title },
       { name: 'twitter:description', content: description },
       { name: 'twitter:image', content: ogImage },
+      { name: 'twitter:image:alt', content: copy.siteName },
     ],
     links: [
       { rel: 'canonical', href: canonical },
       { rel: 'alternate', hrefLang: 'en', href: canonical },
       { rel: 'alternate', hrefLang: 'x-default', href: canonical },
+      {
+        rel: 'alternate',
+        type: 'text/plain',
+        href: `${SITE_ORIGIN}/llms.txt`,
+        title: 'llms.txt',
+      },
     ],
   }
 }
@@ -51,6 +63,7 @@ export function softwareJsonLd() {
         '@id': orgId,
         name: copy.siteName,
         url: `${SITE_ORIGIN}/`,
+        sameAs: [GITHUB_REPO],
         logo: {
           '@type': 'ImageObject',
           url: `${SITE_ORIGIN}/logo.png`,
@@ -67,6 +80,7 @@ export function softwareJsonLd() {
         programmingLanguage: 'Rust',
         runtimePlatform: 'Tollana',
         applicationCategory: 'DeveloperApplication',
+        isAccessibleForFree: true,
         creator: { '@id': orgId },
       },
       {
@@ -77,6 +91,20 @@ export function softwareJsonLd() {
         description: copy.description,
         inLanguage: 'en',
         publisher: { '@id': orgId },
+        isAccessibleForFree: true,
+      },
+      {
+        '@type': 'WebPage',
+        '@id': `${SITE_ORIGIN}/#webpage`,
+        url: `${SITE_ORIGIN}/`,
+        name: copy.title,
+        description: copy.description,
+        isPartOf: { '@id': `${SITE_ORIGIN}/#website` },
+        about: { '@id': softwareId },
+        primaryImageOfPage: {
+          '@type': 'ImageObject',
+          url: `${SITE_ORIGIN}/og.jpg`,
+        },
       },
     ],
   }
